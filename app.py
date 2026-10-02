@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from pydantic import BaseModel
 
 try:
     from fyers_apiv3 import fyersModel
@@ -346,11 +347,10 @@ def fetch_daily_candles(days_back=45):
 # ---------- GLOBAL STATE ----------
 STATE = {
     "engine_running": False,
-    "strategy": "ai_analyst",     # "ai_analyst" | "regime_switcher"
+    "strategy": "ai_analyst",
     "session_day": None,
     "last_spot": None,
     "last_tick": None,
-    # Shared
     "position": None,
     "pnl": 0.0,
     "trades_today": 0,
@@ -358,13 +358,11 @@ STATE = {
     "range_high": None,
     "range_low": None,
     "range_locked": False,
-    # AI Analyst
     "memory": [],
     "last_call": None,
     "last_ai_call_at": 0.0,
     "daily_closes": [],
     "daily_fetched_day": None,
-    # Regime Switcher
     "regime": None,
     "regime_details": None,
     "regime_decided_day": None,
@@ -480,7 +478,7 @@ def manage_position(spot, hm):
 
 
 # ============================================================================
-# AI ANALYST — the strategy we built together, full prompt
+# AI ANALYST
 # ============================================================================
 AI_SYSTEM_PROMPT = """You are a market analyst for NIFTY/Bank Nifty intraday options trading.
 
@@ -634,7 +632,6 @@ def ai_tick(spot, hm):
     if direction == "neutral":
         return
 
-    # Direction filter: suppress calls against the multi-day trend
     if len(daily) >= 2:
         net = daily[-1] - daily[0]
         if net < 0 and direction == "bullish":
@@ -895,6 +892,10 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
+class StrategyBody(BaseModel):
+    strategy: str
+
+
 @app.get("/api/status")
 def status():
     pos_view = None
@@ -921,7 +922,6 @@ def status():
         "has_key": bool(ANTHROPIC_KEY),
         "memory_count": len(STATE["memory"]),
         "last_call": STATE["last_call"],
-        # Regime Switcher
         "regime": STATE["regime"],
         "regime_details": STATE["regime_details"],
         "active_strategy": STATE["active_strategy"],
@@ -930,13 +930,6 @@ def status():
         "range_locked": STATE["range_locked"],
         "fade_broken_side": STATE["fade_broken_side"],
     }
-
-
-class StrategyBody(BaseModel):
-    strategy: str
-
-
-from pydantic import BaseModel
 
 
 @app.post("/api/set-strategy")
