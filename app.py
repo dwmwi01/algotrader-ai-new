@@ -1,11 +1,12 @@
-"""AI ALGO — two strategies, one dashboard.
+"""AI ALGO — two strategies, independent, both can run at once.
 
   AI Analyst     — Claude reads price action + multi-day trend, filters
                    bullish calls in a down market, memory of last 6 calls.
-  Regime Switcher — reads ATR every morning, dispatches to Scalp ORB on
-                   trending days or OR Fade on range days.
+  Regime Switcher — reads ATR every morning, dispatches to Scalp ORB or
+                   OR Fade depending on regime.
 
-Pick one. Press Start. That's it.
+Each strategy has its own position, P&L, and trade count. Enable either,
+both, or neither. Shared only: the account-level daily loss cap.
 """
 import csv
 import datetime as dt
@@ -22,7 +23,6 @@ from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
-from pydantic import BaseModel
 
 try:
     from fyers_apiv3 import fyersModel
@@ -47,10 +47,15 @@ LOT_SIZE = 65
 RANGE_END = (9, 30)
 HARD_EXIT = (15, 0)
 
+# Per-trade exits (apply to every strategy)
 MAX_LOSS = 2000.0
 TARGET = 3500.0
 TRAIL_ARM_PCT = 50.0
 TRAIL_GIVEBACK_PCT = 40.0
+
+# Account-wide risk
+ACCOUNT_MAX_DAILY_LOSS = 20000.0
+ACCOUNT_MAX_TRADES = 12
 
 # AI Analyst
 AI_MODEL = "claude-sonnet-5"
@@ -344,52 +349,89 @@ def fetch_daily_candles(days_back=45):
         return []
 
 
-# ---------- GLOBAL STATE ----------
-STATE = {
+# ---------- STRATEGY STATE ----------
+def _new_strategy(key, name, description, **extra):
+    base = {
+        "key": key,
+        "name": name,
+        "description": description,
+        "enabled": False,
+        "position": None,
+        "pnl": 0.0,
+        "trades_today": 0,
+        "session_day": None,
+        "last_action": None,
+    }
+    base.update(extra)
+    return base
+
+
+STRATEGIES = {
+    "ai_analyst": _new_strategy(
+        "ai_analyst", "AI Analyst",
+        "Claude reads price action + multi-day trend every 15 min and calls direction. Filters bullish calls in a down market. Memory of last 6 calls. Needs ANTHROPIC_API_KEY.",
+        memory=[], last_call=None, last_ai_call_at=0.0,
+        daily_closes=[], daily_fetched_day=None,
+    ),
+    "regime_switcher": _new_strategy(
+        "regime_switcher", "Regime Switcher",
+        "Reads ATR every morning. Trending days → Scalp ORB. Range days → OR Fade. Mechanical, no LLM.",
+        range_high=None, range_low=None, range_locked=False,
+        regime=None, regime_details=None, regime_decided_day=None,
+        active_strategy=None, fade_broken_side=None, fade_last_exit_at=None,
+    ),
+}
+
+ACCOUNT = {
     "engine_running": False,
-    "strategy": "ai_analyst",
-    "session_day": None,
     "last_spot": None,
     "last_tick": None,
-    "position": None,
-    "pnl": 0.0,
-    "trades_today": 0,
-    "last_action": None,
-    "range_high": None,
-    "range_low": None,
-    "range_locked": False,
-    "memory": [],
-    "last_call": None,
-    "last_ai_call_at": 0.0,
-    "daily_closes": [],
-    "daily_fetched_day": None,
-    "regime": None,
-    "regime_details": None,
-    "regime_decided_day": None,
-    "active_strategy": None,
-    "fade_broken_side": None,
-    "fade_last_exit_at": None,
+    "kill": False,
 }
 
 
-def reset_session():
-    STATE["position"] = None
-    STATE["trades_today"] = 0
-    STATE["last_action"] = None
-    STATE["range_high"] = None
-    STATE["range_low"] = None
-    STATE["range_locked"] = False
-    STATE["memory"] = []
-    STATE["last_call"] = None
-    STATE["last_ai_call_at"] = 0.0
-    STATE["daily_closes"] = []
-    STATE["daily_fetched_day"] = None
-    STATE["regime"] = None
-    STATE["regime_details"] = None
-    STATE["regime_decided_day"] = None
-    STATE["active_strategy"] = None
-    STATE["fade_broken_side"] = None
-    STATE["fade_last_exit_at"] = None
+def account_pnl():
+    return sum(s["pnl"] for s in STRATEGIES.values())
+
+
+def account_trades_today():
+    return sum(s["trades_today"] for s in STRATEGIES.values())
+
+
+def can_open():
+    if ACCOUNT["kill"]:
+        return False, "kill switch"
+    if account_pnl() <= -ACCOUNT_MAX_DAILY_LOSS:
+        return False, "account daily loss limit"
+    if account_trades_today() >= ACCOUNT_MAX_TRADES:
+        return False, "account trade cap"
+    return True, ""
+
+
+def reset_strategy_session(strat):
+    """Rollover at market open. Preserves pnl (it's for the day, but we
+    reset it here) -- actually pnl and trades_today are per-day, so reset.
+    Position is dropped because HARD_EXIT at 15:00 should have closed it."""
+    strat["position"] = None
+    strat["pnl"] = 0.0
+    strat["trades_today"] = 0
+    strat["last_action"] = None
+    if strat["key"] == "ai_analyst":
+        strat["memory"] = []
+        strat["last_call"] = None
+        strat["last_ai_call_at"] = 0.0
+        strat["daily_closes"] = []
+        strat["daily_fetched_day"] = None
+    elif strat["key"] == "regime_switcher":
+        strat["range_high"] = None
+        strat["range_low"] = None
+        strat["range_locked"] = False
+        strat["regime"] = None
+        strat["regime_details"] = None
+        strat["regime_decided_day"] = None
+        strat["active_strategy"] = None
+        strat["fade_broken_side"] = None
+        strat["fade_last_exit_at"] = None
 
 
 def clear_stale_positions():
@@ -404,13 +446,19 @@ def clear_stale_positions():
                           (time.time(), 0, r["id"]))
 
 
-# ---------- POSITION ----------
-def open_position(side, spot, strategy, reason="", confidence=None,
-                  direction=None, reasoning=None):
+# ---------- POSITION (per-strategy) ----------
+def open_position_for(strat, side, spot, reason="", confidence=None,
+                       direction=None, reasoning=None):
+    if strat["position"] is not None:
+        return False
+    ok, why = can_open()
+    if not ok:
+        log("WARN", f"[{strat['name']}] blocked: {why}")
+        return False
     symbol = build_option_symbol(spot, side)
     premium = fetch_option_premium(symbol)
     if premium is None:
-        log("WARN", f"could not fetch premium for {symbol} — skipping")
+        log("WARN", f"[{strat['name']}] could not fetch premium for {symbol}")
         return False
     tid = uuid.uuid4().hex[:10]
     with _lock, db() as c:
@@ -418,38 +466,40 @@ def open_position(side, spot, strategy, reason="", confidence=None,
             (id, ts_entry, symbol, side, qty, entry_price, strategy, spot_at_entry,
              decision_confidence, decision_direction, decision_reasoning)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (tid, time.time(), symbol, side, 1, premium, strategy, spot,
+            (tid, time.time(), symbol, side, 1, premium, strat["key"], spot,
              confidence, direction, reasoning))
-    STATE["position"] = {
+    strat["position"] = {
         "id": tid, "entry_premium": premium, "entry_spot": spot,
         "symbol": symbol, "side": side, "qty": 1, "entry_ts": time.time(),
-        "strategy": strategy, "peak_mtm": 0.0, "breakeven_armed": False,
+        "peak_mtm": 0.0, "breakeven_armed": False,
     }
-    STATE["trades_today"] += 1
-    STATE["last_action"] = f"ENTER {symbol} @ ₹{premium:.2f} ({strategy})"
-    log("INFO", STATE["last_action"] + f" — {reason}")
+    strat["trades_today"] += 1
+    strat["last_action"] = f"ENTER {symbol} @ ₹{premium:.2f}"
+    log("INFO", f"[{strat['name']}] {strat['last_action']} — {reason}")
     return True
 
 
-def close_position(exit_premium, pnl, reason):
-    pos = STATE["position"]
+def close_position_for(strat, exit_premium, pnl, reason):
+    pos = strat["position"]
+    if pos is None:
+        return
     with _lock, db() as c:
         c.execute("""UPDATE trades SET ts_exit=?, exit_price=?, pnl=?,
                      exit_reason=? WHERE id=?""",
                   (time.time(), exit_premium, pnl, reason, pos["id"]))
-    STATE["pnl"] += pnl
-    STATE["last_action"] = f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} pnl={pnl:+.0f} ({reason})"
-    log("INFO", STATE["last_action"])
-    if pos["strategy"] == "ai_analyst" and STATE["memory"]:
-        STATE["memory"][-1]["outcome"] = (
+    strat["pnl"] += pnl
+    strat["last_action"] = f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} pnl={pnl:+.0f} ({reason})"
+    log("INFO", f"[{strat['name']}] {strat['last_action']}")
+    if strat["key"] == "ai_analyst" and strat["memory"]:
+        strat["memory"][-1]["outcome"] = (
             f"{'WIN' if pnl > 0 else 'LOSS'} {pnl:+.0f} ({reason})")
-    if pos["strategy"] == "or_fade":
-        STATE["fade_last_exit_at"] = time.time()
-    STATE["position"] = None
+    if strat["key"] == "regime_switcher" and reason != "MARKET_CLOSED":
+        strat["fade_last_exit_at"] = time.time()
+    strat["position"] = None
 
 
-def manage_position(spot, hm):
-    pos = STATE["position"]
+def manage_position_for(strat, spot, hm):
+    pos = strat["position"]
     ltp = fetch_option_premium(pos["symbol"])
     if ltp is None:
         return
@@ -460,82 +510,69 @@ def manage_position(spot, hm):
     if not pos["breakeven_armed"] and \
             pos["peak_mtm"] >= abs(TARGET) * (TRAIL_ARM_PCT / 100.0):
         pos["breakeven_armed"] = True
-        log("INFO", f"Stop moved to breakeven (peak ₹{pos['peak_mtm']:.0f})")
 
     if mtm <= -abs(MAX_LOSS):
-        close_position(ltp, mtm, "STOPLOSS"); return
+        close_position_for(strat, ltp, mtm, "STOPLOSS"); return
     if pos["breakeven_armed"] and mtm <= 0:
-        close_position(ltp, mtm, "BREAKEVEN_STOP"); return
+        close_position_for(strat, ltp, mtm, "BREAKEVEN_STOP"); return
     if pos["peak_mtm"] >= abs(TARGET):
         floor = abs(TARGET) + (pos["peak_mtm"] - abs(TARGET)) * (1 - TRAIL_GIVEBACK_PCT / 100.0)
         if mtm <= floor:
-            close_position(ltp, mtm, "PROFIT_TRAIL"); return
-    if pos["strategy"] == "or_fade":
+            close_position_for(strat, ltp, mtm, "PROFIT_TRAIL"); return
+    # Hold timeout only applies to Regime Switcher's fade sub-strategy
+    if strat["key"] == "regime_switcher" and strat["active_strategy"] == "or_fade":
         if time.time() - pos["entry_ts"] >= RS_FADE_HOLD_TIMEOUT_SEC:
-            close_position(ltp, mtm, "HOLD_TIMEOUT"); return
+            close_position_for(strat, ltp, mtm, "HOLD_TIMEOUT"); return
     if is_at_or_after(hm, HARD_EXIT):
-        close_position(ltp, mtm, "TIME_EXIT"); return
+        close_position_for(strat, ltp, mtm, "TIME_EXIT"); return
 
 
-# ============================================================================
-# AI ANALYST
-# ============================================================================
+# ---------- AI ANALYST ----------
 AI_SYSTEM_PROMPT = """You are a market analyst for NIFTY/Bank Nifty intraday options trading.
 
-You will be given: recent 5-minute candles, a wider multi-hour view, prior-day
-H/L/C, the last several daily closes, India VIX, and -- critically -- YOUR OWN
-RECENT DECISIONS with how they've played out so far.
+You will be given: recent 5-minute candles, prior-day H/L/C, the last several
+daily closes, India VIX, and -- critically -- YOUR OWN RECENT DECISIONS with
+how they've played out so far.
 
 STEP 1 -- classify the setup. Pick exactly one:
-  TRENDING_UP    -- sustained higher highs/lows across multiple timeframes
-  TRENDING_DOWN  -- sustained lower highs/lows across multiple timeframes
-  RANGING        -- oscillating between two levels, no directional bias
-  CHOPPY         -- whipsawing without follow-through
-  REVERSAL       -- previously trending, now showing a counter-sequence
-                    that has persisted 3+ candles
+  TRENDING_UP / TRENDING_DOWN / RANGING / CHOPPY / REVERSAL
 
 STEP 2 -- decide your bias. For TRENDING_* the direction follows the
-classification. For RANGING and CHOPPY the bias must be "neutral" --
-that is a legitimate and often correct answer. For REVERSAL, the direction
-is the reversal direction.
+classification. For RANGING and CHOPPY the bias must be "neutral" -- that is
+a legitimate and often correct answer. For REVERSAL, the direction is the
+reversal direction.
 
-STEP 3 -- state your confidence. This is NOT a probability of winning; it
-is how strongly the data supports the call.
+STEP 3 -- state your confidence (0-100, how strongly the data supports the
+call, NOT a win probability).
 
-CONFIDENCE CALIBRATION -- use the full 0-100 range, not just 50-70:
-  80-100: multiple independent signals align, no significant contradiction.
-  60-79:  most factors align, one meaningful factor cuts the other way.
-  40-59:  genuinely mixed, roughly a coin flip. THIS IS THE DEFAULT when
-          nothing stands out.
-  20-39:  evidence leans against your call and you have a specific,
-          stated reason for going against the grain anyway.
-  0-19:   almost no support for this direction.
+CONFIDENCE CALIBRATION -- use the full 0-100 range:
+  80-100: multiple independent signals align
+  60-79:  most factors align, one factor cuts the other way
+  40-59:  genuinely mixed. DEFAULT when nothing stands out.
+  20-39:  evidence leans against, but you have a specific reason anyway
+  0-19:   almost no support
 
-YOUR OWN RECENT DECISIONS are listed in the user message. Read them carefully.
-If you have said the same thing several times in a row AND the market has moved
-in that direction, your read is working -- do not pretend this is a fresh
-question. If you have flip-flopped, the setup is unstable.
+YOUR OWN RECENT DECISIONS are listed in the user message. If you have said
+the same thing several times in a row AND the market moved your way, your
+read is working -- do not pretend this is a fresh question. If you have
+flip-flopped, the setup is unstable.
 
-OI WALLS ARE NOT HARD FLOORS. Heavy OI at a strike tells you where option
-writers have positioned, NOT that price will stop there. If price has already
-broken a similarly-heavy level once today, treat the next OI level as WEAKER.
-Only treat an OI wall as meaningful if price has actually reacted to it at
-least once today.
+OI WALLS ARE NOT HARD FLOORS. If price has already broken a similarly-heavy
+level once today, treat the next OI level as WEAKER.
 
 MULTI-DAY CONTEXT. If the multi-day trend is clearly down and today's price
-action shows an upside break, that is a bull trap candidate, not a fresh
-trend -- unless you can point to specific evidence the multi-day trend is
-turning. Same in reverse.
+action shows an upside break, that is a bull trap candidate unless you can
+point to specific evidence the trend is turning. Same in reverse.
 
-Respond with ONLY this JSON, nothing else -- no markdown fences, no preamble:
+Respond with ONLY this JSON, nothing else:
 {"classification": "TRENDING_UP"|"TRENDING_DOWN"|"RANGING"|"CHOPPY"|"REVERSAL",
  "direction": "bullish"|"bearish"|"neutral",
  "confidence": <integer 0-100>,
- "reasoning": "<2-4 sentences citing specific data>"}"""
+ "reasoning": "<2-4 sentences>"}"""
 
 
-def ai_format_memory(current_spot):
-    mem = STATE["memory"]
+def ai_format_memory(strat, current_spot):
+    mem = strat["memory"]
     if not mem:
         return "(no prior decisions this session)"
     lines = []
@@ -554,24 +591,19 @@ def ai_format_memory(current_spot):
     return "\n".join(lines)
 
 
-def ai_build_prompt(spot, daily_closes):
+def ai_ask_claude(strat, spot, daily_closes):
+    if not ANTHROPIC_KEY:
+        return None
     trend = ""
     if len(daily_closes) >= 2:
         net = daily_closes[-1] - daily_closes[0]
         trend = (f"\nLast {len(daily_closes)} daily closes: "
                  + ", ".join(f"{v:.0f}" for v in daily_closes)
                  + f"\nNet multi-day move: {net:+.0f} points")
-    return f"""Current spot: {spot:.1f}{trend}
-
-=== YOUR RECENT DECISIONS (most recent first) ===
-{ai_format_memory(spot)}
-
-Read your own history. Decide the likely direction over the next 1-2 hours."""
-
-
-def ai_ask_claude(spot, daily_closes):
-    if not ANTHROPIC_KEY:
-        return None
+    user_msg = (f"Current spot: {spot:.1f}{trend}\n\n"
+                f"=== YOUR RECENT DECISIONS (most recent first) ===\n"
+                f"{ai_format_memory(strat, spot)}\n\n"
+                f"Decide the likely direction over the next 1-2 hours.")
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -580,8 +612,7 @@ def ai_ask_claude(spot, daily_closes):
                      "content-type": "application/json"},
             json={"model": AI_MODEL, "max_tokens": 700,
                   "system": AI_SYSTEM_PROMPT,
-                  "messages": [{"role": "user",
-                                "content": ai_build_prompt(spot, daily_closes)}],
+                  "messages": [{"role": "user", "content": user_msg}],
                   "thinking": {"type": "disabled"}},
             timeout=30)
         r.raise_for_status()
@@ -592,37 +623,37 @@ def ai_ask_claude(spot, daily_closes):
             text = text.strip("`").replace("json", "", 1).strip()
         return json.loads(text)
     except Exception as e:
-        log("ERROR", f"claude call failed: {e}")
+        log("ERROR", f"[{strat['name']}] claude call failed: {e}")
         return None
 
 
-def ai_tick(spot, hm):
-    if STATE["trades_today"] >= AI_MAX_TRADES:
+def tick_ai_analyst(strat, spot, hm):
+    if strat["trades_today"] >= AI_MAX_TRADES:
         return
     if is_at_or_after(hm, HARD_EXIT):
         return
     now = time.time()
-    if now - STATE["last_ai_call_at"] < AI_INTERVAL_SEC:
+    if now - strat["last_ai_call_at"] < AI_INTERVAL_SEC:
         return
-    STATE["last_ai_call_at"] = now
+    strat["last_ai_call_at"] = now
 
     today = dt.datetime.now(IST).date().isoformat()
-    if STATE["daily_fetched_day"] != today:
-        STATE["daily_closes"] = fetch_daily_closes(AI_DAILY_LOOKBACK)
-        STATE["daily_fetched_day"] = today
+    if strat["daily_fetched_day"] != today:
+        strat["daily_closes"] = fetch_daily_closes(AI_DAILY_LOOKBACK)
+        strat["daily_fetched_day"] = today
 
-    daily = STATE["daily_closes"]
-    decision = ai_ask_claude(spot, daily)
+    daily = strat["daily_closes"]
+    decision = ai_ask_claude(strat, spot, daily)
     if not decision:
         return
 
     now_str = dt.datetime.now(IST).strftime("%H:%M")
-    STATE["last_call"] = {**decision, "spot": spot, "ts": time.time()}
-    log("INFO", f"AI: {decision.get('classification','?')} / "
+    strat["last_call"] = {**decision, "spot": spot, "ts": time.time()}
+    log("INFO", f"[{strat['name']}] {decision.get('classification','?')} / "
                 f"{decision.get('direction')} ({decision.get('confidence')}) — "
                 f"{decision.get('reasoning','')}")
 
-    STATE["memory"].append({
+    strat["memory"].append({
         "time": now_str, "direction": decision.get("direction"),
         "confidence": decision.get("confidence"), "spot": spot, "outcome": None,
     })
@@ -635,26 +666,24 @@ def ai_tick(spot, hm):
     if len(daily) >= 2:
         net = daily[-1] - daily[0]
         if net < 0 and direction == "bullish":
-            log("INFO", f"filtered bullish — multi-day down {net:+.0f}")
+            log("INFO", f"[{strat['name']}] filtered bullish — multi-day down {net:+.0f}")
             return
         if net > 0 and direction == "bearish":
-            log("INFO", f"filtered bearish — multi-day up {net:+.0f}")
+            log("INFO", f"[{strat['name']}] filtered bearish — multi-day up {net:+.0f}")
             return
 
     if confidence < AI_MIN_CONFIDENCE:
-        log("INFO", f"confidence {confidence} below {AI_MIN_CONFIDENCE}")
+        log("INFO", f"[{strat['name']}] confidence {confidence} below {AI_MIN_CONFIDENCE}")
         return
 
     side = "CE" if direction == "bullish" else "PE"
-    open_position(side, spot, "ai_analyst",
-                  reason=f"{direction} {confidence:.0f}%",
-                  confidence=confidence, direction=direction,
-                  reasoning=decision.get("reasoning", ""))
+    open_position_for(strat, side, spot,
+                      reason=f"{direction} {confidence:.0f}%",
+                      confidence=confidence, direction=direction,
+                      reasoning=decision.get("reasoning", ""))
 
 
-# ============================================================================
-# REGIME SWITCHER
-# ============================================================================
+# ---------- REGIME SWITCHER ----------
 def _wilder_atr(candles, period=14):
     if len(candles) < period + 1:
         return []
@@ -670,7 +699,7 @@ def _wilder_atr(candles, period=14):
     return atr_vals
 
 
-def classify_regime():
+def classify_regime(strat):
     candles = fetch_daily_candles(days_back=45)
     details = {"atr_ratio": None, "reason": ""}
     if len(candles) < RS_LOOKBACK + 2:
@@ -696,97 +725,102 @@ def classify_regime():
     return "TRENDING", details
 
 
-def rs_update_range(spot):
-    if STATE["range_high"] is None:
-        STATE["range_high"] = STATE["range_low"] = spot
+def rs_update_range(strat, spot):
+    if strat["range_high"] is None:
+        strat["range_high"] = strat["range_low"] = spot
     else:
-        STATE["range_high"] = max(STATE["range_high"], spot)
-        STATE["range_low"] = min(STATE["range_low"], spot)
+        strat["range_high"] = max(strat["range_high"], spot)
+        strat["range_low"] = min(strat["range_low"], spot)
 
 
-def rs_lock_range():
-    if not STATE["range_locked"] and STATE["range_high"] is not None:
-        STATE["range_locked"] = True
-        log("INFO", f"Range locked {STATE['range_low']:.1f}-{STATE['range_high']:.1f} "
-                    f"(regime {STATE['regime']}, strategy {STATE['active_strategy']})")
+def rs_lock_range(strat):
+    if not strat["range_locked"] and strat["range_high"] is not None:
+        strat["range_locked"] = True
+        log("INFO", f"[{strat['name']}] range locked "
+                    f"{strat['range_low']:.1f}-{strat['range_high']:.1f} "
+                    f"(regime {strat['regime']}, sub {strat['active_strategy']})")
 
 
-def rs_scalp_orb_tick(spot, hm):
-    if STATE["trades_today"] >= RS_ORB_MAX_TRADES:
+def rs_scalp_orb_tick(strat, spot, hm):
+    if strat["trades_today"] >= RS_ORB_MAX_TRADES:
         return
     if is_at_or_after(hm, HARD_EXIT):
         return
-    rh, rl = STATE["range_high"], STATE["range_low"]
+    rh, rl = strat["range_high"], strat["range_low"]
     if spot > rh + RS_ORB_BREAK_BUFFER:
-        open_position("CE", spot, "scalp_orb",
-                      reason=f"broke range high {rh:.1f}")
+        open_position_for(strat, "CE", spot,
+                          reason=f"broke range high {rh:.1f}")
     elif spot < rl - RS_ORB_BREAK_BUFFER:
-        open_position("PE", spot, "scalp_orb",
-                      reason=f"broke range low {rl:.1f}")
+        open_position_for(strat, "PE", spot,
+                          reason=f"broke range low {rl:.1f}")
 
 
-def rs_or_fade_tick(spot, hm):
-    if STATE["trades_today"] >= RS_FADE_MAX_TRADES:
+def rs_or_fade_tick(strat, spot, hm):
+    if strat["trades_today"] >= RS_FADE_MAX_TRADES:
         return
     if is_at_or_after(hm, HARD_EXIT):
         return
-    if STATE["fade_last_exit_at"] is not None:
-        if time.time() - STATE["fade_last_exit_at"] < RS_FADE_COOLDOWN_SEC:
+    if strat["fade_last_exit_at"] is not None:
+        if time.time() - strat["fade_last_exit_at"] < RS_FADE_COOLDOWN_SEC:
             return
-    rh, rl = STATE["range_high"], STATE["range_low"]
+    rh, rl = strat["range_high"], strat["range_low"]
     if spot > rh + RS_FADE_BREAK_BUFFER:
-        if STATE["fade_broken_side"] != "UP":
-            STATE["fade_broken_side"] = "UP"
-            log("INFO", f"Broke UP {spot:.1f} — watching for failure")
+        if strat["fade_broken_side"] != "UP":
+            strat["fade_broken_side"] = "UP"
+            log("INFO", f"[{strat['name']}] broke UP {spot:.1f} — watching")
         return
     if spot < rl - RS_FADE_BREAK_BUFFER:
-        if STATE["fade_broken_side"] != "DOWN":
-            STATE["fade_broken_side"] = "DOWN"
-            log("INFO", f"Broke DOWN {spot:.1f} — watching for failure")
+        if strat["fade_broken_side"] != "DOWN":
+            strat["fade_broken_side"] = "DOWN"
+            log("INFO", f"[{strat['name']}] broke DOWN {spot:.1f} — watching")
         return
-    if STATE["fade_broken_side"] is None:
+    if strat["fade_broken_side"] is None:
         return
-    if STATE["fade_broken_side"] == "UP":
+    if strat["fade_broken_side"] == "UP":
         if spot <= rh - RS_FADE_RETURN_BUFFER:
-            open_position("PE", spot, "or_fade", reason="failed UP break")
-            STATE["fade_broken_side"] = None
-    elif STATE["fade_broken_side"] == "DOWN":
+            open_position_for(strat, "PE", spot, reason="failed UP break")
+            strat["fade_broken_side"] = None
+    elif strat["fade_broken_side"] == "DOWN":
         if spot >= rl + RS_FADE_RETURN_BUFFER:
-            open_position("CE", spot, "or_fade", reason="failed DOWN break")
-            STATE["fade_broken_side"] = None
+            open_position_for(strat, "CE", spot, reason="failed DOWN break")
+            strat["fade_broken_side"] = None
 
 
-def regime_switcher_tick(spot, hm):
+def tick_regime_switcher(strat, spot, hm):
     today = dt.datetime.now(IST).date().isoformat()
-    if STATE["regime_decided_day"] != today:
-        regime, details = classify_regime()
-        STATE["regime"] = regime
-        STATE["regime_details"] = details
-        STATE["regime_decided_day"] = today
-        STATE["active_strategy"] = "scalp_orb" if regime == "TRENDING" else "or_fade"
-        log("INFO", f"Regime: {regime} — {details.get('reason','')}. "
-                    f"Strategy: {STATE['active_strategy']}")
+    if strat["regime_decided_day"] != today:
+        regime, details = classify_regime(strat)
+        strat["regime"] = regime
+        strat["regime_details"] = details
+        strat["regime_decided_day"] = today
+        strat["active_strategy"] = "scalp_orb" if regime == "TRENDING" else "or_fade"
+        log("INFO", f"[{strat['name']}] regime: {regime} — {details.get('reason','')}. "
+                    f"Sub-strategy: {strat['active_strategy']}")
 
     if is_before(hm, RANGE_END):
-        rs_update_range(spot)
+        rs_update_range(strat, spot)
         return
-    if not STATE["range_locked"]:
-        rs_lock_range()
+    if not strat["range_locked"]:
+        rs_lock_range(strat)
 
-    if STATE["active_strategy"] == "scalp_orb":
-        rs_scalp_orb_tick(spot, hm)
-    elif STATE["active_strategy"] == "or_fade":
-        rs_or_fade_tick(spot, hm)
+    if strat["active_strategy"] == "scalp_orb":
+        rs_scalp_orb_tick(strat, spot, hm)
+    elif strat["active_strategy"] == "or_fade":
+        rs_or_fade_tick(strat, spot, hm)
 
 
-# ============================================================================
-# ENGINE LOOP
-# ============================================================================
+TICKERS = {
+    "ai_analyst": tick_ai_analyst,
+    "regime_switcher": tick_regime_switcher,
+}
+
+
+# ---------- ENGINE LOOP ----------
 def engine_loop():
     last_state = None
     while True:
         try:
-            if not STATE["engine_running"]:
+            if not ACCOUNT["engine_running"]:
                 time.sleep(2)
                 continue
 
@@ -801,28 +835,28 @@ def engine_loop():
             today_key = now.date().isoformat()
             hm = (now.hour, now.minute)
 
-            if STATE["session_day"] != today_key:
-                reset_session()
-                STATE["session_day"] = today_key
-                log("INFO", f"New session — strategy: {STATE['strategy']}")
-                last_state = "open"
-
             spot = fetch_spot()
             if spot is None:
                 time.sleep(TICK_SECONDS)
                 continue
-            STATE["last_spot"] = spot
-            STATE["last_tick"] = time.time()
+            ACCOUNT["last_spot"] = spot
+            ACCOUNT["last_tick"] = time.time()
 
-            if STATE["position"]:
-                manage_position(spot, hm)
-                time.sleep(TICK_SECONDS)
-                continue
-
-            if STATE["strategy"] == "ai_analyst":
-                ai_tick(spot, hm)
-            elif STATE["strategy"] == "regime_switcher":
-                regime_switcher_tick(spot, hm)
+            for key, strat in STRATEGIES.items():
+                if not strat["enabled"]:
+                    continue
+                # session rollover
+                if strat["session_day"] != today_key:
+                    reset_strategy_session(strat)
+                    strat["session_day"] = today_key
+                    log("INFO", f"[{strat['name']}] new session")
+                    last_state = "open"
+                # manage existing position
+                if strat["position"]:
+                    manage_position_for(strat, spot, hm)
+                    continue
+                # strategy-specific tick
+                TICKERS[key](strat, spot, hm)
 
             time.sleep(TICK_SECONDS)
         except Exception as e:
@@ -881,9 +915,9 @@ def build_scorecard_csv(strategy=None):
 async def lifespan(app):
     init_db()
     clear_stale_positions()
-    saved = kv_get("strategy")
-    if saved in ("ai_analyst", "regime_switcher"):
-        STATE["strategy"] = saved
+    for key, strat in STRATEGIES.items():
+        en = kv_get(f"enabled:{key}")
+        strat["enabled"] = (en == "1")
     threading.Thread(target=engine_loop, daemon=True).start()
     log("INFO", "Engine started")
     yield
@@ -892,15 +926,10 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
-class StrategyBody(BaseModel):
-    strategy: str
-
-
-@app.get("/api/status")
-def status():
+def _snapshot_strategy(strat):
     pos_view = None
-    if STATE["position"]:
-        p = STATE["position"]
+    if strat["position"]:
+        p = strat["position"]
         ltp = fetch_option_premium(p["symbol"])
         mtm = (ltp - p["entry_premium"]) * p["qty"] * LOT_SIZE if ltp else None
         pos_view = {
@@ -908,55 +937,78 @@ def status():
             "entry_premium": p["entry_premium"], "ltp": ltp,
             "mtm": round(mtm, 1) if mtm is not None else None,
         }
-    return {
-        "engine_running": STATE["engine_running"],
-        "strategy": STATE["strategy"],
+    base = {
+        "key": strat["key"],
+        "name": strat["name"],
+        "description": strat["description"],
+        "enabled": strat["enabled"],
         "position": pos_view,
-        "pnl": round(STATE["pnl"], 2),
-        "trades_today": STATE["trades_today"],
-        "last_spot": STATE["last_spot"],
-        "last_action": STATE["last_action"],
+        "pnl": round(strat["pnl"], 2),
+        "trades_today": strat["trades_today"],
+        "last_action": strat["last_action"],
+    }
+    if strat["key"] == "ai_analyst":
+        base["last_call"] = strat.get("last_call")
+        base["memory_count"] = len(strat.get("memory", []))
+    elif strat["key"] == "regime_switcher":
+        base["regime"] = strat.get("regime")
+        base["regime_details"] = strat.get("regime_details")
+        base["active_strategy"] = strat.get("active_strategy")
+        base["range_high"] = strat.get("range_high")
+        base["range_low"] = strat.get("range_low")
+        base["range_locked"] = strat.get("range_locked")
+    return base
+
+
+@app.get("/api/status")
+def status():
+    return {
+        "engine_running": ACCOUNT["engine_running"],
+        "last_spot": ACCOUNT["last_spot"],
+        "last_tick": ACCOUNT["last_tick"],
         "market_open": is_market_open(),
         "fyers_ready": get_fyers_client() is not None,
         "fyers_configured": bool(FYERS_CLIENT_ID and FYERS_SECRET_KEY and FYERS_REDIRECT_URI),
         "has_key": bool(ANTHROPIC_KEY),
-        "memory_count": len(STATE["memory"]),
-        "last_call": STATE["last_call"],
-        "regime": STATE["regime"],
-        "regime_details": STATE["regime_details"],
-        "active_strategy": STATE["active_strategy"],
-        "range_high": STATE["range_high"],
-        "range_low": STATE["range_low"],
-        "range_locked": STATE["range_locked"],
-        "fade_broken_side": STATE["fade_broken_side"],
+        "total_pnl": round(account_pnl(), 2),
+        "total_trades_today": account_trades_today(),
+        "strategies": [_snapshot_strategy(s) for s in STRATEGIES.values()],
     }
 
 
-@app.post("/api/set-strategy")
-def set_strategy(body: StrategyBody):
-    if body.strategy not in ("ai_analyst", "regime_switcher"):
-        return {"error": "invalid strategy"}
-    if STATE["position"]:
-        return {"error": "close open position before switching"}
-    if STATE["engine_running"]:
-        return {"error": "stop engine before switching"}
-    STATE["strategy"] = body.strategy
-    kv_set("strategy", body.strategy)
-    log("INFO", f"Strategy set to {body.strategy}")
-    return {"ok": True, "strategy": body.strategy}
-
-
-@app.post("/api/start")
-def start():
-    STATE["engine_running"] = True
+@app.post("/api/engine/start")
+def engine_start():
+    ACCOUNT["engine_running"] = True
     log("INFO", "Engine started")
     return {"ok": True}
 
 
-@app.post("/api/stop")
-def stop():
-    STATE["engine_running"] = False
+@app.post("/api/engine/stop")
+def engine_stop():
+    ACCOUNT["engine_running"] = False
     log("INFO", "Engine stopped")
+    return {"ok": True}
+
+
+@app.post("/api/strategy/{key}/enable")
+def strat_enable(key: str):
+    s = STRATEGIES.get(key)
+    if not s:
+        return {"error": "unknown strategy"}
+    s["enabled"] = True
+    kv_set(f"enabled:{key}", "1")
+    log("INFO", f"[{s['name']}] enabled")
+    return {"ok": True}
+
+
+@app.post("/api/strategy/{key}/disable")
+def strat_disable(key: str):
+    s = STRATEGIES.get(key)
+    if not s:
+        return {"error": "unknown strategy"}
+    s["enabled"] = False
+    kv_set(f"enabled:{key}", "0")
+    log("INFO", f"[{s['name']}] disabled")
     return {"ok": True}
 
 
@@ -983,16 +1035,22 @@ def fyers_callback(auth_code: str = ""):
 
 
 @app.get("/api/trades")
-def trades():
+def trades(strategy: str = None):
+    q = "SELECT * FROM trades"
+    args = ()
+    if strategy:
+        q += " WHERE strategy=?"
+        args = (strategy,)
+    q += " ORDER BY ts_entry DESC LIMIT 200"
     with _lock, db() as c:
-        rows = c.execute("SELECT * FROM trades ORDER BY ts_entry DESC LIMIT 100").fetchall()
+        rows = c.execute(q, args).fetchall()
     return [dict(r) for r in rows]
 
 
 @app.get("/api/logs")
-def logs():
+def logs(limit: int = 120):
     with _lock, db() as c:
-        rows = c.execute("SELECT * FROM logs ORDER BY ts DESC LIMIT 100").fetchall()
+        rows = c.execute("SELECT * FROM logs ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1000,9 +1058,10 @@ def logs():
 def clear_trades():
     with _lock, db() as c:
         c.execute("DELETE FROM trades")
-    STATE["position"] = None
-    STATE["pnl"] = 0.0
-    STATE["trades_today"] = 0
+    for s in STRATEGIES.values():
+        s["position"] = None
+        s["pnl"] = 0.0
+        s["trades_today"] = 0
     log("INFO", "All trades cleared")
     return {"ok": True}
 
@@ -1111,7 +1170,7 @@ button.danger{{border-color:rgba(255,85,115,0.35);color:var(--red)}}
 button.fyers{{background:linear-gradient(135deg,rgba(160,140,255,0.15),rgba(62,224,255,0.15));
   border-color:rgba(160,140,255,0.4);color:var(--violet);}}
 button.score{{border-color:rgba(34,232,166,0.4);color:var(--green)}}
-main{{padding:32px;max-width:1200px;margin:0 auto;
+main{{padding:32px;max-width:1280px;margin:0 auto;
   display:flex;flex-direction:column;gap:26px;}}
 section{{display:flex;flex-direction:column;gap:14px}}
 h2{{font-family:var(--disp);font-size:12px;font-weight:700;
@@ -1119,89 +1178,43 @@ h2{{font-family:var(--disp);font-size:12px;font-weight:700;
   display:flex;align-items:center;gap:10px;}}
 h2::before{{content:"";width:5px;height:5px;background:var(--cyan);
   box-shadow:0 0 10px var(--cyan);transform:rotate(45deg);border-radius:1px;}}
-.picker{{display:grid;grid-template-columns:1fr 1fr;gap:14px;}}
-.pick{{background:var(--panel);border:2px solid var(--line);border-radius:var(--r);
-  padding:22px;cursor:pointer;transition:all 0.22s cubic-bezier(0.2,0.8,0.2,1);
-  position:relative;overflow:hidden;}}
-.pick:hover{{border-color:var(--line2);transform:translateY(-2px);}}
-.pick.on{{border-color:var(--cyan);
-  background:linear-gradient(135deg,rgba(62,224,255,0.08),rgba(160,140,255,0.05));
-  box-shadow:0 0 0 1px rgba(62,224,255,0.3),0 12px 40px -16px rgba(62,224,255,0.4);}}
-.pick.on::before{{content:"SELECTED";position:absolute;top:12px;right:12px;
-  font-family:var(--mono);font-size:9px;font-weight:700;
-  letter-spacing:0.1em;color:var(--cyan);padding:3px 8px;border-radius:99px;
-  background:rgba(62,224,255,0.15);border:1px solid rgba(62,224,255,0.4);}}
-.pick-name{{font-family:var(--disp);font-size:17px;font-weight:700;
-  letter-spacing:-0.02em;margin-bottom:8px;}}
-.pick-desc{{font-size:12.5px;color:var(--dim);line-height:1.55;}}
-.pick-tag{{display:inline-block;margin-top:12px;font-family:var(--mono);
-  font-size:10px;font-weight:600;letter-spacing:0.06em;padding:3px 9px;
-  border-radius:6px;background:rgba(62,224,255,0.1);color:var(--cyan);}}
-.pick-tag.mech{{background:rgba(245,181,68,0.12);color:var(--amber);}}
-@media(max-width:640px){{.picker{{grid-template-columns:1fr}}}}
-.stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;}}
-.stat-card{{background:var(--panel);backdrop-filter:blur(14px) saturate(160%);
-  -webkit-backdrop-filter:blur(14px) saturate(160%);
-  border:1px solid var(--line);border-radius:var(--r);
-  padding:20px 22px;position:relative;overflow:hidden;}}
-.stat-card::before{{content:"";position:absolute;top:0;left:0;right:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(62,224,255,0.35),transparent);}}
-.stat-label{{font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
-  color:var(--dim2);font-weight:600;margin-bottom:8px;}}
-.stat-value{{font-family:var(--mono);font-size:22px;font-weight:500;}}
-.pill{{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;
-  border-radius:99px;font-size:11px;font-weight:600;font-family:var(--mono);
-  letter-spacing:0.03em;text-transform:uppercase;border:1px solid transparent;}}
+.strat-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;}}
+.scard{{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:22px;position:relative;overflow:hidden;
+  transition:all 0.22s cubic-bezier(0.2,0.8,0.2,1);}}
+.scard:hover{{border-color:var(--line2);}}
+.scard.enabled{{border-color:rgba(34,232,166,0.4);
+  box-shadow:0 0 0 1px rgba(34,232,166,0.15),0 12px 40px -16px rgba(34,232,166,0.3);}}
+.scard-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;}}
+.scard-name{{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-0.02em;}}
+.scard-desc{{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:14px;}}
+.scard-position{{font-size:12px;font-family:var(--mono);color:var(--dim);min-height:20px;margin-bottom:12px;}}
+.scard-metrics{{display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  padding-top:12px;border-top:1px solid var(--line);font-family:var(--mono);}}
+.scard-metric-label{{font-size:9.5px;color:var(--dim2);
+  text-transform:uppercase;letter-spacing:0.12em;font-weight:600;}}
+.scard-metric-val{{font-size:17px;margin-top:3px;font-weight:500;}}
+.scard-actions{{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}}
+.scard-actions button,.scard-actions a{{flex:1;}}
+.scard-actions a{{text-decoration:none;}}
+.scard-actions a button{{width:100%;justify-content:center;}}
+.pill{{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;
+  border-radius:99px;font-size:10.5px;font-weight:600;font-family:var(--mono);
+  letter-spacing:0.04em;text-transform:uppercase;border:1px solid transparent;}}
 .pill-dot{{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}}
 .pill.on{{color:var(--green);background:rgba(34,232,166,0.1);border-color:rgba(34,232,166,0.3)}}
 .pill.on .pill-dot{{box-shadow:0 0 8px var(--green);animation:pulse 2s ease-in-out infinite}}
 .pill.off{{color:var(--dim2);background:rgba(120,145,190,0.06);border-color:var(--line)}}
-.pill.warn{{color:var(--amber);background:rgba(245,181,68,0.1);border-color:rgba(245,181,68,0.3)}}
-.pill.err{{color:var(--red);background:rgba(255,85,115,0.1);border-color:rgba(255,85,115,0.3)}}
+.pill.trade{{color:var(--cyan);background:rgba(62,224,255,0.12);border-color:rgba(62,224,255,0.35)}}
 @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.5}}}}
-.card{{background:var(--panel);backdrop-filter:blur(14px) saturate(160%);
-  -webkit-backdrop-filter:blur(14px) saturate(160%);
-  border:1px solid var(--line);border-radius:var(--r);padding:22px;}}
-.ai-call{{background:linear-gradient(135deg,rgba(62,224,255,0.06),rgba(160,140,255,0.06));
-  border:1px solid rgba(62,224,255,0.18);border-radius:var(--r);
-  padding:22px 24px;position:relative;overflow:hidden;}}
-.ai-call::before{{content:"";position:absolute;top:0;left:0;bottom:0;width:3px;
-  background:linear-gradient(180deg,#0891B2,#34D399);}}
-.ai-head{{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;}}
-.ai-direction{{font-family:var(--disp);font-size:22px;font-weight:700;
-  letter-spacing:-0.02em;text-transform:capitalize;}}
-.ai-direction.bullish{{color:var(--green)}}
-.ai-direction.bearish{{color:var(--red)}}
-.ai-direction.neutral{{color:var(--dim)}}
-.ai-confidence{{font-family:var(--mono);font-size:14px;color:var(--dim);}}
-.ai-confidence b{{color:var(--txt);font-weight:600}}
-.ai-reason{{color:var(--dim);font-size:13.5px;line-height:1.7;}}
-.regime-card{{background:linear-gradient(135deg,rgba(62,224,255,0.06),rgba(160,140,255,0.06));
-  border:1px solid rgba(62,224,255,0.18);border-radius:var(--r);
-  padding:22px 24px;position:relative;overflow:hidden;}}
-.regime-card::before{{content:"";position:absolute;top:0;left:0;bottom:0;width:3px;
-  background:linear-gradient(180deg,#0891B2,#34D399);}}
-.regime-tag{{font-family:var(--disp);font-size:24px;font-weight:700;
-  text-transform:uppercase;letter-spacing:-0.02em;}}
-.regime-tag.TRENDING{{color:var(--green)}}
-.regime-tag.RANGING{{color:var(--amber)}}
-.position-card{{border-radius:var(--r);padding:22px;border:1px solid;}}
-.position-card.long{{background:linear-gradient(135deg,rgba(34,232,166,0.08),rgba(20,28,45,0.72));
-  border-color:rgba(34,232,166,0.3);}}
-.position-card.short{{background:linear-gradient(135deg,rgba(255,85,115,0.08),rgba(20,28,45,0.72));
-  border-color:rgba(255,85,115,0.3);}}
-.position-card.flat{{background:rgba(20,28,45,0.4);border-color:var(--line);
-  color:var(--dim2);text-align:center;padding:28px;font-style:italic;}}
-.position-symbol{{font-family:var(--mono);font-size:16px;font-weight:600;}}
-.position-side{{display:inline-block;padding:3px 10px;border-radius:6px;
-  font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;
-  margin-left:8px;vertical-align:middle;}}
-.position-side.ce{{background:rgba(34,232,166,0.18);color:var(--green)}}
-.position-side.pe{{background:rgba(255,85,115,0.18);color:var(--red)}}
-.position-metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:16px;margin-top:14px;}}
-.metric-label{{font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
-  color:var(--dim2);font-weight:600;margin-bottom:4px;}}
-.metric-value{{font-family:var(--mono);font-size:17px;font-weight:500;}}
+.ai-call{{background:rgba(62,224,255,0.06);border-left:2px solid var(--cyan);
+  padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12.5px;line-height:1.6;}}
+.ai-call b{{color:var(--cyan);font-family:var(--mono);}}
+.ai-reason{{color:var(--dim);font-size:12px;margin-top:4px;}}
+.regime-banner{{background:rgba(245,181,68,0.08);border-left:2px solid var(--amber);
+  padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12.5px;line-height:1.6;}}
+.regime-banner .tag{{color:var(--amber);font-family:var(--disp);font-weight:700;
+  text-transform:uppercase;letter-spacing:0.06em;}}
 .table-wrap{{overflow-x:auto;border-radius:var(--r);border:1px solid var(--line);
   background:rgba(20,28,45,0.4);-webkit-overflow-scrolling:touch;}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}
@@ -1243,15 +1256,11 @@ tbody tr:hover{{background:rgba(62,224,255,0.03)}}
   .tape-value{{font-size:14px}}
   .tape-value.big{{font-size:16px}}
   h2{{font-size:10.5px}}
-  .card,.position-card,.ai-call,.regime-card,.pick{{padding:18px}}
-  .ai-direction{{font-size:19px}}
-  .regime-tag{{font-size:20px}}
+  .scard{{padding:18px}}
+  .scard-name{{font-size:15px}}
+  .strat-grid{{grid-template-columns:1fr}}
   thead th{{padding:12px;font-size:9.5px}}
   tbody td{{padding:11px 12px;font-size:11.5px}}
-  .stats-grid{{grid-template-columns:repeat(2,1fr);gap:10px}}
-  .stat-card{{padding:16px 18px}}
-  .position-metrics{{grid-template-columns:repeat(2,1fr)}}
-  .metric-value{{font-size:15px}}
   .log-terminal{{font-size:11px;padding:14px;max-height:340px}}
   .logo{{font-size:16px}}
   .logo-mark{{width:28px;height:28px}}
@@ -1283,16 +1292,20 @@ tbody tr:hover{{background:rgba(62,224,255,0.03)}}
       <div class="tape-value big" id="spot">—</div>
     </div>
     <div class="tape-item">
-      <div class="tape-label">P&L</div>
+      <div class="tape-label">Total P&L</div>
       <div class="tape-value big" id="pnl">—</div>
     </div>
     <div class="tape-item">
       <div class="tape-label">Trades</div>
       <div class="tape-value" id="trades">0</div>
     </div>
+    <div class="tape-item">
+      <div class="tape-label">Market</div>
+      <div class="tape-value" id="market">—</div>
+    </div>
   </div>
   <div class="header-actions">
-    <button id="toggle" class="primary" onclick="toggle()">Start</button>
+    <button id="toggle" class="primary" onclick="toggleEngine()">Start engine</button>
     <button class="fyers" id="fy-btn" onclick="connectFyers()" style="display:none">Fyers</button>
     <a href="/api/scorecard" download style="text-decoration:none">
       <button class="score">Scorecard</button>
@@ -1303,62 +1316,12 @@ tbody tr:hover{{background:rgba(62,224,255,0.03)}}
 
 <main>
   <section>
-    <h2>Strategy</h2>
-    <div class="picker" id="picker">
-      <div class="pick" data-strategy="ai_analyst" onclick="selectStrategy('ai_analyst')">
-        <div class="pick-name">AI Analyst</div>
-        <div class="pick-desc">Claude reads price action + multi-day trend every 15 minutes and calls direction. Filters bullish calls in a down market. Memory of last 6 calls. Needs ANTHROPIC_API_KEY.</div>
-        <span class="pick-tag">LLM</span>
-      </div>
-      <div class="pick" data-strategy="regime_switcher" onclick="selectStrategy('regime_switcher')">
-        <div class="pick-name">Regime Switcher</div>
-        <div class="pick-desc">Reads ATR every morning. On trending days → Scalp ORB (buy the breakout). On range days → OR Fade (fade failed breakouts). Mechanical, no LLM.</div>
-        <span class="pick-tag mech">MECHANICAL</span>
-      </div>
-    </div>
-    <div id="picker-note" style="font-size:12px;color:var(--dim2);padding:6px 2px"></div>
+    <h2>Strategies</h2>
+    <div class="strat-grid" id="strat-grid"></div>
   </section>
 
   <section>
-    <h2>System Status</h2>
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">Engine</div>
-        <div class="stat-value" id="s-engine">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Market</div>
-        <div class="stat-value" id="s-market">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Fyers</div>
-        <div class="stat-value" id="s-fyers">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Reference Range</div>
-        <div class="stat-value" id="s-range" style="font-size:15px">—</div>
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <h2 id="panel-title">Latest AI Call</h2>
-    <div id="panel-body">
-      <div class="card" style="text-align:center;color:var(--dim2);font-style:italic;padding:28px">
-        Waiting for the first call...
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Open Position</h2>
-    <div id="openpos">
-      <div class="position-card flat">Flat — no open position.</div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Trade History</h2>
+    <h2>Trade history</h2>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -1372,7 +1335,7 @@ tbody tr:hover{{background:rgba(62,224,255,0.03)}}
   </section>
 
   <section>
-    <h2>Engine Log</h2>
+    <h2>Log</h2>
     <div class="log-terminal" id="logs"></div>
   </section>
 </main>
@@ -1382,114 +1345,95 @@ const $ = s => document.querySelector(s);
 async function j(u, o){{const r = await fetch(u, o); return r.json();}}
 function fmt(n, d=2){{return n == null ? "—" : Number(n).toLocaleString("en-IN",{{minimumFractionDigits:d,maximumFractionDigits:d}});}}
 function pill(text, kind){{return `<span class="pill ${{kind}}"><span class="pill-dot"></span>${{text}}</span>`;}}
-let currentStrategy = null;
 
-async function selectStrategy(name){{
-  if(currentStrategy && name !== currentStrategy){{
-    const s = await j("/api/status");
-    if(s.engine_running){{alert("Stop the engine before switching."); return;}}
-    if(s.position){{alert("Close the open position first."); return;}}
-  }}
-  const r = await j("/api/set-strategy", {{
-    method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{strategy: name}})
-  }});
-  if(r.error){{alert("Could not switch: " + r.error); return;}}
-  currentStrategy = name;
+async function toggleEngine(){{
+  const s = await j("/api/status");
+  await j(s.engine_running ? "/api/engine/stop" : "/api/engine/start", {{method:"POST"}});
+  refresh();
+}}
+
+async function toggleStrategy(key, enable){{
+  const endpoint = enable ? "enable" : "disable";
+  await j(`/api/strategy/${{key}}/${{endpoint}}`, {{method:"POST"}});
   refresh();
 }}
 
 async function refresh(){{
   try{{
     const s = await j("/api/status");
-    currentStrategy = s.strategy;
-    document.querySelectorAll(".pick").forEach(el => {{
-      el.classList.toggle("on", el.dataset.strategy === s.strategy);
-    }});
-    const stratLabel = s.strategy === "ai_analyst" ? "AI Analyst" : "Regime Switcher";
-    $("#picker-note").textContent = s.engine_running
-      ? `Running ${{stratLabel}}. Stop the engine to switch.`
-      : `Press Start to run ${{stratLabel}}.`;
-
     $("#spot").textContent = fmt(s.last_spot, 1);
-    $("#pnl").textContent = (s.pnl >= 0 ? "+" : "") + fmt(s.pnl, 0);
-    $("#pnl").className = "tape-value big " + (s.pnl > 0 ? "pos" : s.pnl < 0 ? "neg" : "");
-    $("#trades").textContent = s.trades_today;
+    $("#pnl").textContent = (s.total_pnl >= 0 ? "+" : "") + fmt(s.total_pnl, 0);
+    $("#pnl").className = "tape-value big " + (s.total_pnl > 0 ? "pos" : s.total_pnl < 0 ? "neg" : "");
+    $("#trades").textContent = s.total_trades_today;
+    $("#market").textContent = s.market_open ? "OPEN" : "closed";
+    $("#market").style.color = s.market_open ? "var(--green)" : "var(--dim2)";
 
     const btn = $("#toggle");
-    btn.textContent = s.engine_running ? "Stop" : "Start";
+    btn.textContent = s.engine_running ? "Stop engine" : "Start engine";
     btn.className = s.engine_running ? "danger" : "primary";
 
-    $("#s-engine").innerHTML = s.engine_running ? pill("Running", "on") : pill("Stopped", "off");
-    $("#s-market").innerHTML = s.market_open ? pill("Open", "on") : pill("Closed", "off");
-    const fyState = s.fyers_ready ? "on" : (s.fyers_configured ? "warn" : "off");
-    const fyText = s.fyers_ready ? "Connected" : (s.fyers_configured ? "Auth" : "Off");
-    $("#s-fyers").innerHTML = pill(fyText, fyState);
     $("#fy-btn").style.display = (s.fyers_configured && !s.fyers_ready) ? "inline-flex" : "none";
-    $("#s-range").textContent = s.range_high != null
-      ? `${{fmt(s.range_low,0)}} – ${{fmt(s.range_high,0)}}`
-      : (s.market_open ? "building..." : "—");
 
-    if(s.strategy === "ai_analyst"){{
-      $("#panel-title").textContent = "Latest AI Call";
-      if(s.last_call){{
-        const d = s.last_call;
-        $("#panel-body").innerHTML = `
+    $("#strat-grid").innerHTML = s.strategies.map(str => {{
+      const onClass = str.enabled ? "enabled" : "";
+      const statusPill = str.enabled ? pill("Enabled", "on") : pill("Disabled", "off");
+      const posLine = str.position
+        ? `<span class="pill trade"><span class="pill-dot"></span>${{str.position.side}} ${{
+            str.position.symbol.split(/(?=[A-Z]+$)/)[0].slice(-5)
+          }}</span> @₹${{fmt(str.position.entry_premium,2)}} → ₹${{fmt(str.position.ltp,2)}} `
+          + `<b class="${{str.position.mtm > 0 ? 'pos' : str.position.mtm < 0 ? 'neg' : ''}}">`
+          + `${{str.position.mtm >= 0 ? '+' : ''}}${{fmt(str.position.mtm, 0)}}</b>`
+        : (str.last_action || "flat");
+
+      let extraPanel = "";
+      if(str.key === "ai_analyst" && str.last_call){{
+        extraPanel = `
           <div class="ai-call">
-            <div class="ai-head">
-              <span class="ai-direction ${{d.direction||'neutral'}}">${{d.direction}}</span>
-              <span class="ai-confidence">confidence <b>${{fmt(d.confidence,0)}}%</b></span>
-            </div>
-            <div class="ai-reason">${{d.reasoning||''}}</div>
+            <b>${{str.last_call.direction}}</b> at ${{fmt(str.last_call.confidence,0)}}% confidence
+            <div class="ai-reason">${{str.last_call.reasoning || ''}}</div>
           </div>`;
-      }} else {{
-        $("#panel-body").innerHTML = `<div class="card" style="text-align:center;color:var(--dim2);font-style:italic;padding:28px">Waiting for the first AI call (~15 min after open).</div>`;
-      }}
-    }} else {{
-      $("#panel-title").textContent = "Regime Decision";
-      if(s.regime){{
-        const d = s.regime_details || {{}};
-        const strat = s.active_strategy === "scalp_orb" ? "Scalp ORB" : "OR Fade";
-        $("#panel-body").innerHTML = `
-          <div class="regime-card">
-            <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap">
-              <span class="regime-tag ${{s.regime}}">${{s.regime}}</span>
-              <span class="tag rs">${{strat}}</span>
-            </div>
-            <div class="ai-reason">${{d.reason||''}}</div>
-            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--dim2)">
-              ATR ratio <b style="color:var(--txt)">${{d.atr_ratio!=null?d.atr_ratio.toFixed(2):'—'}}</b>
-              · baseline <b style="color:var(--txt)">${{d.atr_baseline!=null?d.atr_baseline.toFixed(1):'—'}}</b>
-              · recent <b style="color:var(--txt)">${{d.atr_recent!=null?d.atr_recent.toFixed(1):'—'}}</b>
-            </div>
+      }} else if(str.key === "regime_switcher" && str.regime){{
+        const sub = str.active_strategy === "scalp_orb" ? "Scalp ORB" : "OR Fade";
+        const atr = str.regime_details && str.regime_details.atr_ratio;
+        extraPanel = `
+          <div class="regime-banner">
+            <span class="tag">${{str.regime}}</span> → running <b>${{sub}}</b>
+            <div class="ai-reason">${{str.regime_details && str.regime_details.reason || ''}}</div>
+            <div class="ai-reason">ATR ratio: ${{atr != null ? atr.toFixed(2) : '—'}}</div>
           </div>`;
-      }} else {{
-        $("#panel-body").innerHTML = `<div class="card" style="text-align:center;color:var(--dim2);font-style:italic;padding:28px">Regime is read once at market open.</div>`;
       }}
-    }}
 
-    if(s.position){{
-      const p = s.position;
-      const cls = p.side === "CE" ? "long" : "short";
-      const sideCls = p.side.toLowerCase();
-      $("#openpos").innerHTML = `
-        <div class="position-card ${{cls}}">
-          <div>
-            <span class="position-symbol">${{p.symbol}}</span>
-            <span class="position-side ${{sideCls}}">${{p.side}}</span>
+      return `
+        <div class="scard ${{onClass}}">
+          <div class="scard-head">
+            <span class="scard-name">${{str.name}}</span>
+            ${{statusPill}}
           </div>
-          <div class="position-metrics">
-            <div><div class="metric-label">Entry</div>
-              <div class="metric-value">₹${{fmt(p.entry_premium, 2)}}</div></div>
-            <div><div class="metric-label">LTP</div>
-              <div class="metric-value">₹${{fmt(p.ltp, 2)}}</div></div>
-            <div><div class="metric-label">Unrealized</div>
-              <div class="metric-value ${{p.mtm>0?'pos':p.mtm<0?'neg':''}}">${{p.mtm==null?'—':((p.mtm>=0?'+':'') + fmt(p.mtm, 0))}}</div></div>
+          <div class="scard-desc">${{str.description}}</div>
+          <div class="scard-position">${{posLine}}</div>
+          <div class="scard-metrics">
+            <div>
+              <div class="scard-metric-label">P&L</div>
+              <div class="scard-metric-val ${{str.pnl > 0 ? 'pos' : str.pnl < 0 ? 'neg' : ''}}">
+                ${{(str.pnl >= 0 ? '+' : '') + fmt(str.pnl, 0)}}
+              </div>
+            </div>
+            <div>
+              <div class="scard-metric-label">Trades today</div>
+              <div class="scard-metric-val">${{str.trades_today}}</div>
+            </div>
+          </div>
+          ${{extraPanel}}
+          <div class="scard-actions">
+            <button onclick="toggleStrategy('${{str.key}}', ${{!str.enabled}})">
+              ${{str.enabled ? "Disable" : "Enable"}}
+            </button>
+            <a href="/api/scorecard?strategy=${{str.key}}" download>
+              <button>CSV</button>
+            </a>
           </div>
         </div>`;
-    }} else {{
-      $("#openpos").innerHTML = `<div class="position-card flat">Flat — no open position.</div>`;
-    }}
+    }}).join("");
   }}catch(e){{}}
 
   try{{
@@ -1530,21 +1474,18 @@ async function refresh(){{
   }}catch(e){{}}
 }}
 
-async function toggle(){{
-  const s = await j("/api/status");
-  await j(s.engine_running ? "/api/stop" : "/api/start", {{method:"POST"}});
-  refresh();
-}}
 async function connectFyers(){{
   const r = await j("/api/fyers/login-url");
   if(r.error){{alert("Fyers error: " + r.error); return;}}
   window.open(r.url, "_blank");
 }}
+
 async function clearTrades(){{
   if(!confirm("Delete ALL trades?")) return;
   await j("/api/clear-trades", {{method:"POST"}});
   refresh();
 }}
+
 setInterval(refresh, 3000);
 refresh();
 </script>
