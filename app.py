@@ -1,4 +1,4 @@
-"""AlgoTrader v5 — modern UI + PWA support."""
+"""AI ALGO — single-file trading app with modern UI and PWA support."""
 import csv
 import datetime as dt
 import io
@@ -27,6 +27,8 @@ FYERS_CLIENT_ID = os.environ.get("FYERS_CLIENT_ID", "")
 FYERS_SECRET_KEY = os.environ.get("FYERS_SECRET_KEY", "")
 FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "")
 
+APP_NAME = "AI ALGO"
+
 MODEL = "claude-sonnet-5"
 TICK_SECONDS = 3
 MAX_LOSS = 2000.0
@@ -51,6 +53,19 @@ NSE_HOLIDAYS_2026 = {
 }
 
 MONTH_CODE = {1:"1",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"O",11:"N",12:"D"}
+
+LOGO_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs>
+<linearGradient id="g" x1="0%" y1="100%" x2="100%" y2="0%">
+<stop offset="0%" stop-color="#1E40AF"/>
+<stop offset="50%" stop-color="#0891B2"/>
+<stop offset="100%" stop-color="#34D399"/>
+</linearGradient>
+</defs>
+<path d="M 100 160 Q 100 110 150 95 Q 230 75 310 120 L 415 185 Q 435 200 428 225 Q 415 275 370 315 Q 290 385 220 410 Q 175 425 150 408 Q 110 385 100 335 Q 92 285 100 240 Z" fill="url(#g)"/>
+<path d="M 135 345 L 205 275 L 245 310 L 350 205" stroke="#FFFFFF" stroke-width="22" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 325 175 L 390 155 L 372 220 Z" fill="#FFFFFF"/>
+</svg>'''
 
 
 def is_market_open():
@@ -560,7 +575,7 @@ def build_scorecard_csv():
     wins = sum(1 for t in trades if (t.get("pnl") or 0) > 0)
     total_pnl = sum((t.get("pnl") or 0) for t in trades)
 
-    w.writerow(["AI Scorecard"])
+    w.writerow([f"{APP_NAME} Scorecard"])
     w.writerow(["Total closed trades", total])
     w.writerow(["Win rate %", round(100 * wins / total, 1) if total else 0])
     w.writerow(["Total P&L (rupees)", round(total_pnl, 2)])
@@ -737,8 +752,8 @@ def scorecard():
 @app.get("/manifest.json")
 def manifest():
     return {
-        "name": "AlgoTrader",
-        "short_name": "AlgoTrader",
+        "name": APP_NAME,
+        "short_name": APP_NAME,
         "start_url": "/",
         "display": "standalone",
         "background_color": "#070A12",
@@ -751,13 +766,7 @@ def manifest():
 
 @app.get("/icon.svg")
 def icon():
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-           '<rect width="512" height="512" rx="96" fill="#070A12"/>'
-           '<rect x="110" y="290" width="65" height="112" rx="14" fill="#F5B544"/>'
-           '<rect x="224" y="200" width="65" height="202" rx="14" fill="#F5B544"/>'
-           '<rect x="338" y="110" width="65" height="292" rx="14" fill="#F5B544"/>'
-           '</svg>')
-    return Response(content=svg, media_type="image/svg+xml")
+    return Response(content=LOGO_SVG, media_type="image/svg+xml")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -765,12 +774,12 @@ def index():
     return HTML
 
 
-HTML = """<!DOCTYPE html>
+HTML = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AlgoTrader</title>
+<title>{APP_NAME}</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -778,16 +787,14 @@ HTML = """<!DOCTYPE html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="AlgoTrader">
+<meta name="apple-mobile-web-app-title" content="{APP_NAME}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{
+:root{{
   --bg:#070A12;
-  --bg2:#0C1220;
   --panel:rgba(20,28,45,0.72);
-  --panel-solid:#141C2D;
   --line:rgba(120,145,190,0.12);
   --line2:rgba(120,145,190,0.22);
   --txt:#EAEFFA;
@@ -797,18 +804,16 @@ HTML = """<!DOCTYPE html>
   --cyan-dim:#0E4A5C;
   --violet:#A08CFF;
   --green:#22E8A6;
-  --green-dim:#0B4D38;
   --red:#FF5573;
-  --red-dim:#5A1B29;
   --amber:#F5B544;
   --mono:'JetBrains Mono',ui-monospace,monospace;
   --sans:'Inter',-apple-system,system-ui,sans-serif;
   --disp:'Space Grotesk',var(--sans);
   --r:14px;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-::selection{background:var(--cyan-dim);color:#fff}
-body{
+}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+::selection{{background:var(--cyan-dim);color:#fff}}
+body{{
   background:var(--bg);color:var(--txt);
   font:15px/1.55 var(--sans);
   min-height:100vh;
@@ -817,8 +822,8 @@ body{
   overflow-x:hidden;
   padding-top:env(safe-area-inset-top);
   padding-bottom:env(safe-area-inset-bottom);
-}
-body::before{
+}}
+body::before{{
   content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;
   background-image:
     linear-gradient(rgba(62,224,255,0.035) 1px,transparent 1px),
@@ -826,23 +831,23 @@ body::before{
   background-size:38px 38px;
   -webkit-mask-image:radial-gradient(ellipse 90% 70% at 50% 0%,#000 30%,transparent 85%);
           mask-image:radial-gradient(ellipse 90% 70% at 50% 0%,#000 30%,transparent 85%);
-}
-body::after{
+}}
+body::after{{
   content:"";position:fixed;inset:0;z-index:-3;pointer-events:none;
   background:
     radial-gradient(800px 500px at 15% -10%,rgba(62,224,255,0.14),transparent 65%),
     radial-gradient(700px 450px at 100% 5%,rgba(160,140,255,0.12),transparent 65%),
     radial-gradient(700px 500px at 50% 110%,rgba(34,232,166,0.06),transparent 65%);
-}
-.power-bar{
+}}
+.power-bar{{
   position:fixed;top:0;left:0;right:0;height:2px;z-index:100;
-  background:linear-gradient(90deg,var(--cyan),var(--violet),var(--green),var(--cyan));
+  background:linear-gradient(90deg,#1E40AF,#0891B2,#34D399,#1E40AF);
   background-size:300% 100%;
   animation:sweep 8s linear infinite;
-}
-@keyframes sweep{0%{background-position:0% 0}100%{background-position:300% 0}}
+}}
+@keyframes sweep{{0%{{background-position:0% 0}}100%{{background-position:300% 0}}}}
 
-header{
+header{{
   padding:16px 32px;
   border-bottom:1px solid var(--line);
   background:rgba(7,10,18,0.72);
@@ -850,34 +855,32 @@ header{
   -webkit-backdrop-filter:blur(20px) saturate(180%);
   position:sticky;top:0;z-index:50;
   display:flex;align-items:center;gap:20px;flex-wrap:wrap;
-}
-.logo{
-  font-family:var(--disp);font-weight:700;font-size:17px;
+}}
+.logo{{
+  font-family:var(--disp);font-weight:700;font-size:18px;
   letter-spacing:-0.02em;
-  display:flex;align-items:center;gap:10px;
-}
-.logo-dot{
-  width:8px;height:8px;border-radius:50%;
-  background:var(--cyan);
-  box-shadow:0 0 10px var(--cyan),0 0 20px var(--cyan);
-  animation:pulse 2s ease-in-out infinite;
-}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-.tape{
+  display:flex;align-items:center;gap:11px;
+  text-transform:uppercase;
+}}
+.logo-mark{{
+  width:32px;height:32px;flex-shrink:0;
+  filter:drop-shadow(0 0 8px rgba(52,211,153,0.5));
+}}
+.tape{{
   display:flex;gap:22px;flex-wrap:wrap;align-items:center;
   font-family:var(--mono);
-}
-.tape-item{display:flex;flex-direction:column;gap:2px}
-.tape-label{
+}}
+.tape-item{{display:flex;flex-direction:column;gap:2px}}
+.tape-label{{
   font-size:9.5px;text-transform:uppercase;letter-spacing:0.14em;
   color:var(--dim2);font-weight:600;
-}
-.tape-value{font-size:16px;font-weight:500;letter-spacing:-0.02em}
-.tape-value.big{font-size:18px}
-.pos{color:var(--green)} .neg{color:var(--red)}
-.header-actions{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+}}
+.tape-value{{font-size:16px;font-weight:500;letter-spacing:-0.02em}}
+.tape-value.big{{font-size:18px}}
+.pos{{color:var(--green)}} .neg{{color:var(--red)}}
+.header-actions{{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}}
 
-button, .btn{
+button, .btn{{
   font-family:var(--sans);font-size:12.5px;font-weight:500;
   background:rgba(255,255,255,0.03);
   border:1px solid var(--line2);
@@ -888,54 +891,54 @@ button, .btn{
   letter-spacing:0.01em;
   display:inline-flex;align-items:center;gap:7px;
   text-decoration:none;
-}
-button:hover, .btn:hover{
+}}
+button:hover, .btn:hover{{
   border-color:var(--cyan);
   color:var(--cyan);
   background:rgba(62,224,255,0.08);
   transform:translateY(-1px);
-}
-button.primary{
-  background:linear-gradient(135deg,var(--cyan) 0%,var(--violet) 100%);
+}}
+button.primary{{
+  background:linear-gradient(135deg,#0891B2 0%,#34D399 100%);
   color:#04070D;border:none;font-weight:700;
-  box-shadow:0 4px 24px -6px rgba(62,224,255,0.55);
-}
-button.primary:hover{transform:translateY(-2px);box-shadow:0 8px 30px -6px rgba(62,224,255,0.7);color:#04070D}
-button.danger{border-color:rgba(255,85,115,0.35);color:var(--red)}
-button.danger:hover{border-color:var(--red);color:var(--red);background:rgba(255,85,115,0.08)}
-button.fyers{
+  box-shadow:0 4px 24px -6px rgba(52,211,153,0.55);
+}}
+button.primary:hover{{transform:translateY(-2px);box-shadow:0 8px 30px -6px rgba(52,211,153,0.7);color:#04070D}}
+button.danger{{border-color:rgba(255,85,115,0.35);color:var(--red)}}
+button.danger:hover{{border-color:var(--red);color:var(--red);background:rgba(255,85,115,0.08)}}
+button.fyers{{
   background:linear-gradient(135deg,rgba(160,140,255,0.15) 0%,rgba(62,224,255,0.15) 100%);
   border-color:rgba(160,140,255,0.4);color:var(--violet);
-}
-button.fyers:hover{border-color:var(--violet);background:rgba(160,140,255,0.15)}
-button.score{border-color:rgba(34,232,166,0.4);color:var(--green)}
-button.score:hover{border-color:var(--green);background:rgba(34,232,166,0.08)}
+}}
+button.fyers:hover{{border-color:var(--violet);background:rgba(160,140,255,0.15)}}
+button.score{{border-color:rgba(34,232,166,0.4);color:var(--green)}}
+button.score:hover{{border-color:var(--green);background:rgba(34,232,166,0.08)}}
 
-main{
+main{{
   padding:32px;max-width:1200px;margin:0 auto;
   display:flex;flex-direction:column;gap:28px;
-}
-section{display:flex;flex-direction:column;gap:14px}
-h2{
+}}
+section{{display:flex;flex-direction:column;gap:14px}}
+h2{{
   font-family:var(--disp);font-size:12px;font-weight:700;
   text-transform:uppercase;letter-spacing:0.16em;
   color:var(--dim);
   display:flex;align-items:center;gap:10px;
-}
-h2::before{
+}}
+h2::before{{
   content:"";width:5px;height:5px;
   background:var(--cyan);
   box-shadow:0 0 10px var(--cyan);
   transform:rotate(45deg);
   border-radius:1px;
-}
+}}
 
-.stats-grid{
+.stats-grid{{
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
   gap:14px;
-}
-.stat-card{
+}}
+.stat-card{{
   background:var(--panel);
   backdrop-filter:blur(14px) saturate(160%);
   -webkit-backdrop-filter:blur(14px) saturate(160%);
@@ -945,47 +948,47 @@ h2::before{
   position:relative;
   overflow:hidden;
   transition:all 0.25s cubic-bezier(0.2,0.8,0.2,1);
-}
-.stat-card:hover{
+}}
+.stat-card:hover{{
   border-color:var(--line2);
   transform:translateY(-2px);
   box-shadow:0 12px 40px -16px rgba(0,0,0,0.7);
-}
-.stat-card::before{
+}}
+.stat-card::before{{
   content:"";position:absolute;top:0;left:0;right:0;height:1px;
   background:linear-gradient(90deg,transparent,rgba(62,224,255,0.35),transparent);
   opacity:0.8;
-}
-.stat-card.accent-green::before{background:linear-gradient(90deg,transparent,rgba(34,232,166,0.55),transparent)}
-.stat-card.accent-violet::before{background:linear-gradient(90deg,transparent,rgba(160,140,255,0.55),transparent)}
-.stat-label{
+}}
+.stat-card.accent-green::before{{background:linear-gradient(90deg,transparent,rgba(34,232,166,0.55),transparent)}}
+.stat-card.accent-violet::before{{background:linear-gradient(90deg,transparent,rgba(160,140,255,0.55),transparent)}}
+.stat-label{{
   font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
   color:var(--dim2);font-weight:600;
   margin-bottom:8px;
-}
-.stat-value{
+}}
+.stat-value{{
   font-family:var(--mono);font-size:24px;font-weight:500;
   letter-spacing:-0.03em;line-height:1.1;
-}
-.stat-sub{
+}}
+.stat-sub{{
   margin-top:8px;font-size:11.5px;color:var(--dim);
-}
+}}
 
-.pill{
+.pill{{
   display:inline-flex;align-items:center;gap:7px;
   padding:4px 11px;border-radius:99px;
   font-size:11px;font-weight:600;font-family:var(--mono);
   letter-spacing:0.03em;text-transform:uppercase;
   border:1px solid transparent;
-}
-.pill-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
-.pill.on{color:var(--green);background:rgba(34,232,166,0.1);border-color:rgba(34,232,166,0.3)}
-.pill.on .pill-dot{box-shadow:0 0 8px var(--green);animation:pulse 2s ease-in-out infinite}
-.pill.off{color:var(--dim2);background:rgba(120,145,190,0.06);border-color:var(--line)}
-.pill.warn{color:var(--amber);background:rgba(245,181,68,0.1);border-color:rgba(245,181,68,0.3)}
-.pill.err{color:var(--red);background:rgba(255,85,115,0.1);border-color:rgba(255,85,115,0.3)}
+}}
+.pill-dot{{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}}
+.pill.on{{color:var(--green);background:rgba(34,232,166,0.1);border-color:rgba(34,232,166,0.3)}}
+.pill.on .pill-dot{{box-shadow:0 0 8px var(--green);animation:pulse 2s ease-in-out infinite}}
+.pill.off{{color:var(--dim2);background:rgba(120,145,190,0.06);border-color:var(--line)}}
+.pill.warn{{color:var(--amber);background:rgba(245,181,68,0.1);border-color:rgba(245,181,68,0.3)}}
+.pill.err{{color:var(--red);background:rgba(255,85,115,0.1);border-color:rgba(255,85,115,0.3)}}
 
-.card{
+.card{{
   background:var(--panel);
   backdrop-filter:blur(14px) saturate(160%);
   -webkit-backdrop-filter:blur(14px) saturate(160%);
@@ -994,107 +997,107 @@ h2::before{
   padding:24px;
   position:relative;
   overflow:hidden;
-}
-.card:hover{border-color:var(--line2)}
+}}
+.card:hover{{border-color:var(--line2)}}
 
-.ai-call{
+.ai-call{{
   background:linear-gradient(135deg,rgba(62,224,255,0.06) 0%,rgba(160,140,255,0.06) 100%);
   border:1px solid rgba(62,224,255,0.18);
   border-radius:var(--r);
   padding:22px 24px;
   position:relative;
   overflow:hidden;
-}
-.ai-call::before{
+}}
+.ai-call::before{{
   content:"";position:absolute;top:0;left:0;bottom:0;width:3px;
-  background:linear-gradient(180deg,var(--cyan),var(--violet));
-}
-.ai-head{
+  background:linear-gradient(180deg,#0891B2,#34D399);
+}}
+.ai-head{{
   display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;
-}
-.ai-direction{
+}}
+.ai-direction{{
   font-family:var(--disp);font-size:22px;font-weight:700;
   letter-spacing:-0.02em;text-transform:capitalize;
-}
-.ai-direction.bullish{color:var(--green)}
-.ai-direction.bearish{color:var(--red)}
-.ai-direction.neutral{color:var(--dim)}
-.ai-confidence{
+}}
+.ai-direction.bullish{{color:var(--green)}}
+.ai-direction.bearish{{color:var(--red)}}
+.ai-direction.neutral{{color:var(--dim)}}
+.ai-confidence{{
   font-family:var(--mono);font-size:14px;color:var(--dim);
-}
-.ai-confidence b{color:var(--txt);font-weight:600}
-.ai-reason{
+}}
+.ai-confidence b{{color:var(--txt);font-weight:600}}
+.ai-reason{{
   color:var(--dim);font-size:13.5px;line-height:1.7;
-}
-.ai-meta{
+}}
+.ai-meta{{
   margin-top:14px;padding-top:14px;border-top:1px solid var(--line);
   display:flex;gap:20px;flex-wrap:wrap;
   font-family:var(--mono);font-size:11.5px;color:var(--dim2);
-}
-.ai-meta b{color:var(--dim);font-weight:500}
+}}
+.ai-meta b{{color:var(--dim);font-weight:500}}
 
-.position-card{
+.position-card{{
   border-radius:var(--r);
   padding:24px;
   border:1px solid;
   position:relative;
   overflow:hidden;
-}
-.position-card.long{
+}}
+.position-card.long{{
   background:linear-gradient(135deg,rgba(34,232,166,0.08) 0%,rgba(20,28,45,0.72) 100%);
   border-color:rgba(34,232,166,0.3);
-}
-.position-card.short{
+}}
+.position-card.short{{
   background:linear-gradient(135deg,rgba(255,85,115,0.08) 0%,rgba(20,28,45,0.72) 100%);
   border-color:rgba(255,85,115,0.3);
-}
-.position-card.flat{
+}}
+.position-card.flat{{
   background:rgba(20,28,45,0.4);
   border-color:var(--line);
   color:var(--dim2);
   text-align:center;
   padding:32px;
   font-style:italic;
-}
-.position-header{
+}}
+.position-header{{
   display:flex;justify-content:space-between;align-items:flex-start;
   gap:16px;margin-bottom:20px;flex-wrap:wrap;
-}
-.position-symbol{
+}}
+.position-symbol{{
   font-family:var(--mono);font-size:17px;font-weight:600;
   letter-spacing:-0.02em;
-}
-.position-side{
+}}
+.position-side{{
   display:inline-block;
   padding:3px 10px;border-radius:6px;
   font-size:10.5px;font-weight:700;
   letter-spacing:0.08em;text-transform:uppercase;
   margin-left:8px;vertical-align:middle;
-}
-.position-side.ce{background:rgba(34,232,166,0.18);color:var(--green)}
-.position-side.pe{background:rgba(255,85,115,0.18);color:var(--red)}
-.position-metrics{
+}}
+.position-side.ce{{background:rgba(34,232,166,0.18);color:var(--green)}}
+.position-side.pe{{background:rgba(255,85,115,0.18);color:var(--red)}}
+.position-metrics{{
   display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
   gap:16px;
-}
-.metric-label{
+}}
+.metric-label{{
   font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
   color:var(--dim2);font-weight:600;margin-bottom:4px;
-}
-.metric-value{
+}}
+.metric-value{{
   font-family:var(--mono);font-size:18px;font-weight:500;
   letter-spacing:-0.02em;
-}
+}}
 
-.table-wrap{
+.table-wrap{{
   overflow-x:auto;
   border-radius:var(--r);
   border:1px solid var(--line);
   background:rgba(20,28,45,0.4);
   -webkit-overflow-scrolling:touch;
-}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{
+}}
+table{{width:100%;border-collapse:collapse;font-size:13px}}
+thead th{{
   font-family:var(--disp);
   font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
   color:var(--dim2);font-weight:700;
@@ -1102,28 +1105,28 @@ thead th{
   border-bottom:1px solid var(--line);
   background:rgba(7,10,18,0.4);
   white-space:nowrap;
-}
-tbody td{
+}}
+tbody td{{
   padding:13px 16px;
   font-family:var(--mono);font-size:12.5px;
   border-bottom:1px solid rgba(120,145,190,0.06);
   white-space:nowrap;
-}
-tbody tr:last-child td{border-bottom:none}
-tbody tr:hover{background:rgba(62,224,255,0.03)}
-.trigger-tag{
+}}
+tbody tr:last-child td{{border-bottom:none}}
+tbody tr:hover{{background:rgba(62,224,255,0.03)}}
+.trigger-tag{{
   display:inline-block;
   padding:2px 8px;border-radius:5px;
   background:rgba(62,224,255,0.1);
   color:var(--cyan);font-size:10.5px;
   font-weight:600;
-}
-.trigger-tag.break{
+}}
+.trigger-tag.break{{
   background:rgba(34,232,166,0.12);
   color:var(--green);
-}
+}}
 
-.log-terminal{
+.log-terminal{{
   background:rgba(4,7,13,0.6);
   border:1px solid var(--line);
   border-radius:var(--r);
@@ -1133,55 +1136,57 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
   font-family:var(--mono);font-size:12px;
   display:flex;flex-direction:column-reverse;gap:4px;
   -webkit-overflow-scrolling:touch;
-}
-.log-line{
+}}
+.log-line{{
   display:flex;gap:12px;padding:5px 0;
   line-height:1.6;
   border-bottom:1px solid rgba(120,145,190,0.04);
-}
-.log-line:last-child{border-bottom:none}
-.log-time{color:var(--dim2);flex-shrink:0;font-size:11px;padding-top:1px}
-.log-msg{color:var(--txt);flex:1;word-break:break-word}
-.log-line.WARN .log-msg{color:var(--amber)}
-.log-line.ERROR .log-msg{color:var(--red)}
+}}
+.log-line:last-child{{border-bottom:none}}
+.log-time{{color:var(--dim2);flex-shrink:0;font-size:11px;padding-top:1px}}
+.log-msg{{color:var(--txt);flex:1;word-break:break-word}}
+.log-line.WARN .log-msg{{color:var(--amber)}}
+.log-line.ERROR .log-msg{{color:var(--red)}}
 
-.empty{
+.empty{{
   color:var(--dim2);font-size:13px;
   padding:16px;text-align:center;font-style:italic;
-}
+}}
 
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:rgba(120,145,190,0.15);border-radius:6px}
-::-webkit-scrollbar-thumb:hover{background:rgba(120,145,190,0.3)}
+::-webkit-scrollbar{{width:8px;height:8px}}
+::-webkit-scrollbar-track{{background:transparent}}
+::-webkit-scrollbar-thumb{{background:rgba(120,145,190,0.15);border-radius:6px}}
+::-webkit-scrollbar-thumb:hover{{background:rgba(120,145,190,0.3)}}
 
-@media(max-width:720px){
-  header{padding:14px 16px;gap:12px;position:relative}
-  main{padding:20px 14px;gap:22px}
-  .header-actions{margin-left:0;width:100%;gap:8px}
-  .header-actions button{padding:8px 14px;font-size:12px;flex:1;justify-content:center}
-  .tape{gap:16px;width:100%;order:3}
-  .tape-item{flex:1}
-  .stat-value{font-size:20px}
-  .position-symbol{font-size:15px}
-  .tape-value{font-size:14px}
-  .tape-value.big{font-size:16px}
-  h2{font-size:10.5px}
-  .card,.position-card,.ai-call{padding:18px}
-  .ai-direction{font-size:19px}
-  thead th{padding:12px 12px;font-size:9.5px}
-  tbody td{padding:11px 12px;font-size:11.5px}
-  .stats-grid{grid-template-columns:repeat(2,1fr);gap:10px}
-  .stat-card{padding:16px 18px}
-  .position-metrics{grid-template-columns:repeat(2,1fr)}
-  .metric-value{font-size:16px}
-  .log-terminal{font-size:11px;padding:14px;max-height:340px}
-  .log-time{font-size:10px}
-}
-@media(max-width:400px){
-  .header-actions button{padding:7px 11px;font-size:11px}
-  .stat-value{font-size:18px}
-}
+@media(max-width:720px){{
+  header{{padding:14px 16px;gap:12px;position:relative}}
+  main{{padding:20px 14px;gap:22px}}
+  .header-actions{{margin-left:0;width:100%;gap:8px}}
+  .header-actions button{{padding:8px 14px;font-size:12px;flex:1;justify-content:center}}
+  .tape{{gap:16px;width:100%;order:3}}
+  .tape-item{{flex:1}}
+  .stat-value{{font-size:20px}}
+  .position-symbol{{font-size:15px}}
+  .tape-value{{font-size:14px}}
+  .tape-value.big{{font-size:16px}}
+  h2{{font-size:10.5px}}
+  .card,.position-card,.ai-call{{padding:18px}}
+  .ai-direction{{font-size:19px}}
+  thead th{{padding:12px 12px;font-size:9.5px}}
+  tbody td{{padding:11px 12px;font-size:11.5px}}
+  .stats-grid{{grid-template-columns:repeat(2,1fr);gap:10px}}
+  .stat-card{{padding:16px 18px}}
+  .position-metrics{{grid-template-columns:repeat(2,1fr)}}
+  .metric-value{{font-size:16px}}
+  .log-terminal{{font-size:11px;padding:14px;max-height:340px}}
+  .log-time{{font-size:10px}}
+  .logo{{font-size:16px}}
+  .logo-mark{{width:28px;height:28px}}
+}}
+@media(max-width:400px){{
+  .header-actions button{{padding:7px 11px;font-size:11px}}
+  .stat-value{{font-size:18px}}
+}}
 </style>
 </head>
 <body>
@@ -1189,8 +1194,19 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
 
 <header>
   <div class="logo">
-    <div class="logo-dot" id="logo-dot"></div>
-    AlgoTrader
+    <svg class="logo-mark" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="lg" x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#1E40AF"/>
+          <stop offset="50%" stop-color="#0891B2"/>
+          <stop offset="100%" stop-color="#34D399"/>
+        </linearGradient>
+      </defs>
+      <path d="M 100 160 Q 100 110 150 95 Q 230 75 310 120 L 415 185 Q 435 200 428 225 Q 415 275 370 315 Q 290 385 220 410 Q 175 425 150 408 Q 110 385 100 335 Q 92 285 100 240 Z" fill="url(#lg)"/>
+      <path d="M 135 345 L 205 275 L 245 310 L 350 205" stroke="#FFFFFF" stroke-width="22" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 325 175 L 390 155 L 372 220 Z" fill="#FFFFFF"/>
+    </svg>
+    {APP_NAME}
   </div>
   <div class="tape">
     <div class="tape-item">
@@ -1287,15 +1303,15 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
 
 <script>
 const $ = s => document.querySelector(s);
-async function j(u, o){const r = await fetch(u, o); return r.json();}
-function fmt(n, d=2){return n == null ? "—" : Number(n).toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});}
+async function j(u, o){{const r = await fetch(u, o); return r.json();}}
+function fmt(n, d=2){{return n == null ? "—" : Number(n).toLocaleString("en-IN",{{minimumFractionDigits:d,maximumFractionDigits:d}});}}
 
-function pill(text, kind){
-  return `<span class="pill ${kind}"><span class="pill-dot"></span>${text}</span>`;
-}
+function pill(text, kind){{
+  return `<span class="pill ${{kind}}"><span class="pill-dot"></span>${{text}}</span>`;
+}}
 
-async function refresh(){
-  try{
+async function refresh(){{
+  try{{
     const s = await j("/api/status");
     $("#spot").textContent = fmt(s.last_spot, 1);
     $("#pnl").textContent = (s.pnl >= 0 ? "+" : "") + fmt(s.pnl, 0);
@@ -1305,11 +1321,6 @@ async function refresh(){
     const btn = $("#toggle");
     btn.textContent = s.running ? "Stop" : "Start";
     btn.className = s.running ? "danger" : "primary";
-
-    $("#logo-dot").style.background = s.running ? "var(--green)" : "var(--cyan)";
-    $("#logo-dot").style.boxShadow = s.running
-      ? "0 0 10px var(--green),0 0 20px var(--green)"
-      : "0 0 10px var(--cyan),0 0 20px var(--cyan)";
 
     $("#s-engine").innerHTML = s.running ? pill("Running", "on") : pill("Stopped", "off");
     $("#s-engine-sub").textContent = s.running ? "engine active" : "click Start";
@@ -1326,118 +1337,118 @@ async function refresh(){
     $("#fy-btn").style.display = (s.fyers_configured && !s.fyers_ready) ? "inline-flex" : "none";
 
     $("#s-pd").textContent = s.prior_day_high != null
-      ? `${fmt(s.prior_day_high,0)} / ${fmt(s.prior_day_low,0)}`
+      ? `${{fmt(s.prior_day_high,0)}} / ${{fmt(s.prior_day_low,0)}}`
       : "—";
 
     $("#s-mem").textContent = s.memory_count;
 
-    if(s.last_call){
+    if(s.last_call){{
       const d = s.last_call;
       const dirClass = d.direction || "neutral";
-      const trig = d.trigger ? `<span class="trigger-tag ${d.trigger.includes('broke') ? 'break' : ''}">${d.trigger}</span>` : "";
+      const trig = d.trigger ? `<span class="trigger-tag ${{d.trigger.includes('broke') ? 'break' : ''}}">${{d.trigger}}</span>` : "";
       $("#ai").innerHTML = `
         <div class="ai-call">
           <div class="ai-head">
-            <span class="ai-direction ${dirClass}">${d.direction}</span>
-            <span class="ai-confidence">confidence <b>${fmt(d.confidence, 0)}%</b></span>
-            ${trig}
+            <span class="ai-direction ${{dirClass}}">${{d.direction}}</span>
+            <span class="ai-confidence">confidence <b>${{fmt(d.confidence, 0)}}%</b></span>
+            ${{trig}}
           </div>
-          <div class="ai-reason">${d.reasoning || ''}</div>
+          <div class="ai-reason">${{d.reasoning || ''}}</div>
           <div class="ai-meta">
-            <span>Spot <b>${fmt(d.spot, 1)}</b></span>
-            <span>${new Date(d.ts*1000).toLocaleTimeString()}</span>
+            <span>Spot <b>${{fmt(d.spot, 1)}}</b></span>
+            <span>${{new Date(d.ts*1000).toLocaleTimeString()}}</span>
           </div>
         </div>`;
-    }
+    }}
 
-    if(s.position){
+    if(s.position){{
       const p = s.position;
       const cls = p.dir === "bullish" ? "long" : "short";
       const sideLabel = p.dir === "bullish" ? "CE" : "PE";
       const sideCls = sideLabel.toLowerCase();
       $("#openpos").innerHTML = `
-        <div class="position-card ${cls}">
+        <div class="position-card ${{cls}}">
           <div class="position-header">
             <div>
-              <span class="position-symbol">${p.symbol}</span>
-              <span class="position-side ${sideCls}">${sideLabel}</span>
+              <span class="position-symbol">${{p.symbol}}</span>
+              <span class="position-side ${{sideCls}}">${{sideLabel}}</span>
             </div>
           </div>
           <div class="position-metrics">
             <div>
               <div class="metric-label">Entry</div>
-              <div class="metric-value">₹${fmt(p.entry_premium, 2)}</div>
+              <div class="metric-value">₹${{fmt(p.entry_premium, 2)}}</div>
             </div>
             <div>
               <div class="metric-label">LTP</div>
-              <div class="metric-value">₹${fmt(p.ltp, 2)}</div>
+              <div class="metric-value">₹${{fmt(p.ltp, 2)}}</div>
             </div>
             <div>
               <div class="metric-label">Unrealized</div>
-              <div class="metric-value ${p.mtm>0?'pos':p.mtm<0?'neg':''}">${p.mtm==null?'—':((p.mtm>=0?'+':'') + fmt(p.mtm, 0))}</div>
+              <div class="metric-value ${{p.mtm>0?'pos':p.mtm<0?'neg':''}}">${{p.mtm==null?'—':((p.mtm>=0?'+':'') + fmt(p.mtm, 0))}}</div>
             </div>
           </div>
         </div>`;
-    } else {
+    }} else {{
       $("#openpos").innerHTML = `<div class="position-card flat">Flat — no open position.</div>`;
-    }
-  }catch(e){}
+    }}
+  }}catch(e){{}}
 
-  try{
+  try{{
     const t = await j("/api/trades");
-    if(t.length === 0){
+    if(t.length === 0){{
       $("#trades-table").innerHTML = "";
       $("#trades-empty").style.display = "block";
-    } else {
+    }} else {{
       $("#trades-empty").style.display = "none";
-      $("#trades-table").innerHTML = t.map(x => {
+      $("#trades-table").innerHTML = t.map(x => {{
         const trig = x.decision_trigger || '';
         const trigCls = trig.includes('broke') ? 'break' : '';
-        const trigHtml = trig ? `<span class="trigger-tag ${trigCls}">${trig}</span>` : '—';
+        const trigHtml = trig ? `<span class="trigger-tag ${{trigCls}}">${{trig}}</span>` : '—';
         const pnlVal = x.pnl == null ? null : x.pnl;
         const pnlCls = pnlVal > 0 ? 'pos' : pnlVal < 0 ? 'neg' : '';
         const pnlTxt = pnlVal == null ? '<span style="color:var(--dim2)">open</span>'
                                       : ((pnlVal>=0?'+':'') + fmt(pnlVal, 0));
         return `<tr>
-          <td>${new Date(x.ts_entry*1000).toLocaleTimeString()}</td>
-          <td>${x.symbol}</td>
-          <td>${x.decision_confidence != null ? fmt(x.decision_confidence,0)+'%' : '—'}</td>
-          <td>${trigHtml}</td>
-          <td>₹${fmt(x.entry_price,2)}</td>
-          <td>${x.exit_price != null ? '₹'+fmt(x.exit_price,2) : '—'}</td>
-          <td class="${pnlCls}">${pnlTxt}</td>
-          <td style="color:var(--dim);font-size:11.5px">${x.exit_reason||''}</td>
+          <td>${{new Date(x.ts_entry*1000).toLocaleTimeString()}}</td>
+          <td>${{x.symbol}}</td>
+          <td>${{x.decision_confidence != null ? fmt(x.decision_confidence,0)+'%' : '—'}}</td>
+          <td>${{trigHtml}}</td>
+          <td>₹${{fmt(x.entry_price,2)}}</td>
+          <td>${{x.exit_price != null ? '₹'+fmt(x.exit_price,2) : '—'}}</td>
+          <td class="${{pnlCls}}">${{pnlTxt}}</td>
+          <td style="color:var(--dim);font-size:11.5px">${{x.exit_reason||''}}</td>
         </tr>`;
-      }).join("");
-    }
-  }catch(e){}
+      }}).join("");
+    }}
+  }}catch(e){{}}
 
-  try{
+  try{{
     const l = await j("/api/logs");
     $("#logs").innerHTML = l.map(x =>
-      `<div class="log-line ${x.level}">
-        <span class="log-time">${new Date(x.ts*1000).toLocaleTimeString()}</span>
-        <span class="log-msg">${x.msg}</span>
+      `<div class="log-line ${{x.level}}">
+        <span class="log-time">${{new Date(x.ts*1000).toLocaleTimeString()}}</span>
+        <span class="log-msg">${{x.msg}}</span>
       </div>`
     ).join("");
-  }catch(e){}
-}
+  }}catch(e){{}}
+}}
 
-async function toggle(){
+async function toggle(){{
   const s = await j("/api/status");
-  await j(s.running ? "/api/stop" : "/api/start", {method:"POST"});
+  await j(s.running ? "/api/stop" : "/api/start", {{method:"POST"}});
   refresh();
-}
-async function connectFyers(){
+}}
+async function connectFyers(){{
   const r = await j("/api/fyers/login-url");
-  if(r.error){alert("Fyers error: " + r.error); return;}
+  if(r.error){{alert("Fyers error: " + r.error); return;}}
   window.open(r.url, "_blank");
-}
-async function clearTrades(){
+}}
+async function clearTrades(){{
   if(!confirm("Delete ALL trades?")) return;
-  await j("/api/clear-trades", {method:"POST"});
+  await j("/api/clear-trades", {{method:"POST"}});
   refresh();
-}
+}}
 setInterval(refresh, 3000);
 refresh();
 </script>
