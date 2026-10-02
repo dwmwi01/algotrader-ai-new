@@ -1,4 +1,4 @@
-"""AlgoTrader v5 — modern UI, real ATM weekly option pricing."""
+"""AlgoTrader v5 — modern UI + PWA support."""
 import csv
 import datetime as dt
 import io
@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 try:
     from fyers_apiv3 import fyersModel
@@ -734,6 +734,32 @@ def scorecard():
         headers={"Content-Disposition": 'attachment; filename="scorecard.csv"'})
 
 
+@app.get("/manifest.json")
+def manifest():
+    return {
+        "name": "AlgoTrader",
+        "short_name": "AlgoTrader",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#070A12",
+        "theme_color": "#070A12",
+        "orientation": "portrait",
+        "icons": [{"src": "/icon.svg", "sizes": "any",
+                   "type": "image/svg+xml", "purpose": "any"}],
+    }
+
+
+@app.get("/icon.svg")
+def icon():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+           '<rect width="512" height="512" rx="96" fill="#070A12"/>'
+           '<rect x="110" y="290" width="65" height="112" rx="14" fill="#F5B544"/>'
+           '<rect x="224" y="200" width="65" height="202" rx="14" fill="#F5B544"/>'
+           '<rect x="338" y="110" width="65" height="292" rx="14" fill="#F5B544"/>'
+           '</svg>')
+    return Response(content=svg, media_type="image/svg+xml")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
@@ -743,8 +769,16 @@ HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AlgoTrader</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#070A12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AlgoTrader">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -781,6 +815,8 @@ body{
   -webkit-font-smoothing:antialiased;
   position:relative;
   overflow-x:hidden;
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
 }
 body::before{
   content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;
@@ -806,7 +842,6 @@ body::after{
 }
 @keyframes sweep{0%{background-position:0% 0}100%{background-position:300% 0}}
 
-/* header */
 header{
   padding:16px 32px;
   border-bottom:1px solid var(--line);
@@ -842,7 +877,6 @@ header{
 .pos{color:var(--green)} .neg{color:var(--red)}
 .header-actions{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
-/* buttons */
 button, .btn{
   font-family:var(--sans);font-size:12.5px;font-weight:500;
   background:rgba(255,255,255,0.03);
@@ -876,9 +910,7 @@ button.fyers{
 button.fyers:hover{border-color:var(--violet);background:rgba(160,140,255,0.15)}
 button.score{border-color:rgba(34,232,166,0.4);color:var(--green)}
 button.score:hover{border-color:var(--green);background:rgba(34,232,166,0.08)}
-button svg{width:14px;height:14px;flex-shrink:0}
 
-/* main */
 main{
   padding:32px;max-width:1200px;margin:0 auto;
   display:flex;flex-direction:column;gap:28px;
@@ -898,7 +930,6 @@ h2::before{
   border-radius:1px;
 }
 
-/* status grid — top-level stats */
 .stats-grid{
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
@@ -926,7 +957,6 @@ h2::before{
   opacity:0.8;
 }
 .stat-card.accent-green::before{background:linear-gradient(90deg,transparent,rgba(34,232,166,0.55),transparent)}
-.stat-card.accent-red::before{background:linear-gradient(90deg,transparent,rgba(255,85,115,0.55),transparent)}
 .stat-card.accent-violet::before{background:linear-gradient(90deg,transparent,rgba(160,140,255,0.55),transparent)}
 .stat-label{
   font-size:10px;text-transform:uppercase;letter-spacing:0.14em;
@@ -934,22 +964,19 @@ h2::before{
   margin-bottom:8px;
 }
 .stat-value{
-  font-family:var(--mono);font-size:26px;font-weight:500;
+  font-family:var(--mono);font-size:24px;font-weight:500;
   letter-spacing:-0.03em;line-height:1.1;
 }
 .stat-sub{
   margin-top:8px;font-size:11.5px;color:var(--dim);
-  display:flex;align-items:center;gap:6px;
 }
 
-/* pills */
 .pill{
   display:inline-flex;align-items:center;gap:7px;
   padding:4px 11px;border-radius:99px;
   font-size:11px;font-weight:600;font-family:var(--mono);
   letter-spacing:0.03em;text-transform:uppercase;
   border:1px solid transparent;
-  transition:all 0.2s ease;
 }
 .pill-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
 .pill.on{color:var(--green);background:rgba(34,232,166,0.1);border-color:rgba(34,232,166,0.3)}
@@ -958,7 +985,6 @@ h2::before{
 .pill.warn{color:var(--amber);background:rgba(245,181,68,0.1);border-color:rgba(245,181,68,0.3)}
 .pill.err{color:var(--red);background:rgba(255,85,115,0.1);border-color:rgba(255,85,115,0.3)}
 
-/* cards */
 .card{
   background:var(--panel);
   backdrop-filter:blur(14px) saturate(160%);
@@ -968,11 +994,9 @@ h2::before{
   padding:24px;
   position:relative;
   overflow:hidden;
-  transition:all 0.25s ease;
 }
 .card:hover{border-color:var(--line2)}
 
-/* AI call card */
 .ai-call{
   background:linear-gradient(135deg,rgba(62,224,255,0.06) 0%,rgba(160,140,255,0.06) 100%);
   border:1px solid rgba(62,224,255,0.18);
@@ -1009,14 +1033,12 @@ h2::before{
 }
 .ai-meta b{color:var(--dim);font-weight:500}
 
-/* position card */
 .position-card{
   border-radius:var(--r);
   padding:24px;
   border:1px solid;
   position:relative;
   overflow:hidden;
-  transition:all 0.3s ease;
 }
 .position-card.long{
   background:linear-gradient(135deg,rgba(34,232,166,0.08) 0%,rgba(20,28,45,0.72) 100%);
@@ -1064,12 +1086,12 @@ h2::before{
   letter-spacing:-0.02em;
 }
 
-/* table */
 .table-wrap{
   overflow-x:auto;
   border-radius:var(--r);
   border:1px solid var(--line);
   background:rgba(20,28,45,0.4);
+  -webkit-overflow-scrolling:touch;
 }
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{
@@ -1085,23 +1107,22 @@ tbody td{
   padding:13px 16px;
   font-family:var(--mono);font-size:12.5px;
   border-bottom:1px solid rgba(120,145,190,0.06);
+  white-space:nowrap;
 }
 tbody tr:last-child td{border-bottom:none}
-tbody tr{transition:background 0.15s ease}
 tbody tr:hover{background:rgba(62,224,255,0.03)}
 .trigger-tag{
   display:inline-block;
   padding:2px 8px;border-radius:5px;
   background:rgba(62,224,255,0.1);
   color:var(--cyan);font-size:10.5px;
-  font-weight:600;letter-spacing:0.02em;
+  font-weight:600;
 }
 .trigger-tag.break{
   background:rgba(34,232,166,0.12);
   color:var(--green);
 }
 
-/* log */
 .log-terminal{
   background:rgba(4,7,13,0.6);
   border:1px solid var(--line);
@@ -1111,6 +1132,7 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
   overflow-y:auto;
   font-family:var(--mono);font-size:12px;
   display:flex;flex-direction:column-reverse;gap:4px;
+  -webkit-overflow-scrolling:touch;
 }
 .log-line{
   display:flex;gap:12px;padding:5px 0;
@@ -1122,33 +1144,43 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
 .log-msg{color:var(--txt);flex:1;word-break:break-word}
 .log-line.WARN .log-msg{color:var(--amber)}
 .log-line.ERROR .log-msg{color:var(--red)}
-.log-strat{color:var(--cyan);font-weight:600}
 
-/* empty state */
 .empty{
   color:var(--dim2);font-size:13px;
   padding:16px;text-align:center;font-style:italic;
 }
 
-/* scrollbar */
-::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:rgba(120,145,190,0.15);border-radius:6px}
 ::-webkit-scrollbar-thumb:hover{background:rgba(120,145,190,0.3)}
 
-/* responsive */
 @media(max-width:720px){
-  header{padding:14px 16px;gap:12px}
-  main{padding:20px 16px;gap:22px}
-  .header-actions{margin-left:0;width:100%}
-  .stat-value{font-size:22px}
+  header{padding:14px 16px;gap:12px;position:relative}
+  main{padding:20px 14px;gap:22px}
+  .header-actions{margin-left:0;width:100%;gap:8px}
+  .header-actions button{padding:8px 14px;font-size:12px;flex:1;justify-content:center}
+  .tape{gap:16px;width:100%;order:3}
+  .tape-item{flex:1}
+  .stat-value{font-size:20px}
   .position-symbol{font-size:15px}
   .tape-value{font-size:14px}
   .tape-value.big{font-size:16px}
-  h2{font-size:11px}
-  .card,.position-card{padding:18px}
+  h2{font-size:10.5px}
+  .card,.position-card,.ai-call{padding:18px}
+  .ai-direction{font-size:19px}
   thead th{padding:12px 12px;font-size:9.5px}
   tbody td{padding:11px 12px;font-size:11.5px}
+  .stats-grid{grid-template-columns:repeat(2,1fr);gap:10px}
+  .stat-card{padding:16px 18px}
+  .position-metrics{grid-template-columns:repeat(2,1fr)}
+  .metric-value{font-size:16px}
+  .log-terminal{font-size:11px;padding:14px;max-height:340px}
+  .log-time{font-size:10px}
+}
+@media(max-width:400px){
+  .header-actions button{padding:7px 11px;font-size:11px}
+  .stat-value{font-size:18px}
 }
 </style>
 </head>
@@ -1166,7 +1198,7 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
       <div class="tape-value big" id="spot">—</div>
     </div>
     <div class="tape-item">
-      <div class="tape-label">Day P&L</div>
+      <div class="tape-label">P&L</div>
       <div class="tape-value big" id="pnl">—</div>
     </div>
     <div class="tape-item">
@@ -1187,7 +1219,7 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
 <main>
   <section>
     <h2>System Status</h2>
-    <div class="stats-grid" id="status-grid">
+    <div class="stats-grid">
       <div class="stat-card accent-green">
         <div class="stat-label">Engine</div>
         <div class="stat-value" id="s-engine">—</div>
@@ -1207,13 +1239,12 @@ tbody tr:hover{background:rgba(62,224,255,0.03)}
         <div class="stat-value" id="s-fyers">—</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Prior Day H/L</div>
-        <div class="stat-value" id="s-pd" style="font-size:17px">—</div>
+        <div class="stat-label">Prior H/L</div>
+        <div class="stat-value" id="s-pd" style="font-size:16px">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">AI Memory</div>
         <div class="stat-value" id="s-mem">—</div>
-        <div class="stat-sub">decisions in this session</div>
       </div>
     </div>
   </section>
@@ -1285,7 +1316,7 @@ async function refresh(){
 
     $("#s-market").innerHTML = s.market_open
       ? pill("Open", "on") : pill("Closed", "off");
-    $("#s-market-sub").textContent = s.market_open ? "NSE live session" : "outside session";
+    $("#s-market-sub").textContent = s.market_open ? "NSE live" : "outside session";
 
     $("#s-key").innerHTML = s.has_key
       ? pill("Set", "on") : pill("Missing", "err");
@@ -1313,8 +1344,8 @@ async function refresh(){
           </div>
           <div class="ai-reason">${d.reasoning || ''}</div>
           <div class="ai-meta">
-            <span>Spot at call <b>${fmt(d.spot, 1)}</b></span>
-            <span>Time <b>${new Date(d.ts*1000).toLocaleTimeString()}</b></span>
+            <span>Spot <b>${fmt(d.spot, 1)}</b></span>
+            <span>${new Date(d.ts*1000).toLocaleTimeString()}</span>
           </div>
         </div>`;
     }
@@ -1334,15 +1365,15 @@ async function refresh(){
           </div>
           <div class="position-metrics">
             <div>
-              <div class="metric-label">Entry Premium</div>
+              <div class="metric-label">Entry</div>
               <div class="metric-value">₹${fmt(p.entry_premium, 2)}</div>
             </div>
             <div>
-              <div class="metric-label">Current LTP</div>
+              <div class="metric-label">LTP</div>
               <div class="metric-value">₹${fmt(p.ltp, 2)}</div>
             </div>
             <div>
-              <div class="metric-label">Unrealized P&L</div>
+              <div class="metric-label">Unrealized</div>
               <div class="metric-value ${p.mtm>0?'pos':p.mtm<0?'neg':''}">${p.mtm==null?'—':((p.mtm>=0?'+':'') + fmt(p.mtm, 0))}</div>
             </div>
           </div>
