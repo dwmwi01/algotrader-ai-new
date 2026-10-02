@@ -68,6 +68,13 @@ RS_FADE_MAX_TRADES = 4
 
 DEFAULT_VIX = 13.0
 
+# Backtest entry sanity -- refuse trades whose target needs > this multiple
+# of the current premium in a single-unit move. 1.0 means the option would
+# need to double+ to hit target, which the smooth Black-Scholes repricing
+# would deliver unreliably. Confirmed as the source of "100% win rate"
+# contamination on cheap OTM options near expiry.
+MAX_TARGET_MOVE_MULTIPLE = 1.0
+
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
 NSE_HOLIDAYS_2026 = {
@@ -98,7 +105,6 @@ _SIM = {
 
 
 def _sf(x, default=0.0):
-    """Safe float. Returns default if x is None or unparseable."""
     if x is None:
         return default
     try:
@@ -108,7 +114,6 @@ def _sf(x, default=0.0):
 
 
 def _sim_now_epoch():
-    """Returns the current epoch (sim time in backtest, real time live)."""
     if _SIM["active"] and _SIM["now"] is not None:
         return _SIM["now"].replace(tzinfo=IST).timestamp()
     return time.time()
@@ -531,6 +536,22 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
     if premium is None:
         log("WARN", f"[{strat['name']}] could not fetch premium for {symbol}")
         return False
+
+    # ---- ENTRY SANITY: refuse trades whose target needs an unrealistic move ----
+    # Confirmed via a real 12-month backtest: entries priced at ₹1-15 with a
+    # ₹3,500 target were winning 100% of the time under smooth Black-Scholes
+    # repricing. Real markets don't deliver that reliability. If the option
+    # would need to more than double its premium to hit target, skip.
+    if premium > 0:
+        move_needed_per_unit = abs(TARGET) / (1 * LOT_SIZE)
+        if move_needed_per_unit > premium * MAX_TARGET_MOVE_MULTIPLE:
+            log("WARN",
+                f"[{strat['name']}] SKIP {symbol} — premium ₹{premium:.2f}; "
+                f"target needs ₹{move_needed_per_unit:.2f}/unit move "
+                f"({100 * move_needed_per_unit / premium:.0f}% of premium). "
+                f"Contaminated cheap-option zone.")
+            return False
+
     tid = uuid.uuid4().hex[:10]
     entry_ts = _sim_now_epoch()
     if not _SIM["active"]:
@@ -610,7 +631,6 @@ def manage_position_for(strat, spot, hm):
         if mtm <= floor:
             close_position_for(strat, ltp, mtm, "PROFIT_TRAIL"); return
     if strat["key"] == "regime_switcher" and strat["active_strategy"] == "or_fade":
-        # use sim time so backtest cooldown reflects replayed clock, not wall clock
         now_epoch = _sim_now_epoch()
         if now_epoch - _sf(pos["entry_ts"]) >= RS_FADE_HOLD_TIMEOUT_SEC:
             close_position_for(strat, ltp, mtm, "HOLD_TIMEOUT"); return
@@ -984,7 +1004,6 @@ def run_backtest_thread(months):
         spot_series = _series({int(c[0]): _sf(c[4]) for c in spot_candles if c[4] is not None})
         vix_series = _series({int(c[0]): _sf(c[4]) for c in vix_candles if c[4] is not None}) if vix_candles else None
 
-        # reset strategy
         strat = STRATEGIES["regime_switcher"]
         reset_strategy_session(strat)
         strat["enabled"] = True
@@ -1006,7 +1025,7 @@ def run_backtest_thread(months):
 
             spot = spot_series["price"][i]
             vix_raw = _series_at(vix_series, ts) if vix_series else None
-            vix = _sf(vix_raw, DEFAULT_VIX)  # <-- THE FIX
+            vix = _sf(vix_raw, DEFAULT_VIX)
 
             sim_now = dt.datetime.fromtimestamp(ts, tz=IST).replace(tzinfo=None)
             cur_day = sim_now.date()
@@ -1036,7 +1055,6 @@ def run_backtest_thread(months):
             else:
                 tick_regime_switcher(strat, spot, hm)
 
-        # force-close any leftover
         if strat["position"]:
             ltp = fetch_option_premium(strat["position"]["symbol"])
             if ltp is not None:
@@ -1582,6 +1600,7 @@ z-index:200;overflow-y:auto;padding:30px 16px;backdrop-filter:blur(3px)">
     <p style="color:var(--dim);font-size:13px;line-height:1.6;margin-bottom:16px">
       Replays historical 5-min NIFTY candles through the real Regime Switcher.
       Option premiums are estimated with Black-Scholes using India VIX as the IV input.
+      Entries where the target requires the option to more than double in premium are refused.
     </p>
     <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
       <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--dim)">
