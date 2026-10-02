@@ -1,4 +1,9 @@
-"""AlgoTrader — single-file web app. AI Analyst for NIFTY with Fyers quotes."""
+"""AlgoTrader — single-file web app. AI Analyst for NIFTY with Fyers quotes.
+
+Includes market-hours and holiday checks so the engine idles outside NSE
+regular session. Before this fix, the bot would trade on stale data on
+holidays and after-market hours, polluting the paper-trading log.
+"""
 import asyncio
 import datetime as dt
 import json
@@ -36,6 +41,28 @@ MIN_CONFIDENCE = 60
 DIRECTION_FILTER = "aligned_only"
 
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
+
+# IST timezone — India has no DST so a fixed offset is exact
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+
+# NSE trading holidays (weekday closures). Must be updated every year.
+NSE_HOLIDAYS_2026 = {
+    "2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
+    "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26",
+    "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24",
+    "2026-12-25",
+}
+
+
+def is_market_open():
+    """True only during NSE regular session (09:15-15:30 IST) on a trading day."""
+    now = dt.datetime.now(IST)
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    if now.date().isoformat() in NSE_HOLIDAYS_2026:
+        return False
+    hm = now.hour * 60 + now.minute
+    return (9 * 60 + 15) <= hm < (15 * 60 + 30)
 
 
 # ---------- DB ----------
@@ -83,7 +110,6 @@ _fyers_lock = threading.Lock()
 
 
 def get_fyers_client():
-    """Returns an authenticated Fyers client, or None."""
     global _fyers_client
     if not HAVE_FYERS or not FYERS_CLIENT_ID or not FYERS_SECRET_KEY:
         return None
@@ -119,7 +145,6 @@ def fyers_login_url():
 
 
 def fyers_exchange_code(code):
-    """Exchange auth_code for access_token. Saves token to DB."""
     global _fyers_client
     if not HAVE_FYERS:
         return "fyers-apiv3 not installed"
@@ -150,7 +175,6 @@ _SPOT_FALLBACK = {"value": 25200.0}
 
 def fetch_spot():
     """Priority: Fyers → Yahoo → simulated walk."""
-    # Try Fyers first
     fyers = get_fyers_client()
     if fyers is not None:
         try:
@@ -162,7 +186,6 @@ def fetch_spot():
         except Exception as e:
             log("WARN", f"fyers quote failed: {e}")
 
-    # Fall back to Yahoo
     try:
         r = requests.get(
             "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI",
@@ -179,7 +202,6 @@ def fetch_spot():
     except Exception:
         pass
 
-    # Simulated fallback
     _SPOT_FALLBACK["value"] += random.uniform(-5, 5)
     return round(_SPOT_FALLBACK["value"], 2)
 
@@ -254,12 +276,47 @@ STATE = {"running": False, "position": None, "pnl": 0.0,
          "trades_today": 0, "last_call": None, "last_spot": None}
 
 
+def clear_stale_positions():
+    """On startup, close out any 'open' trade left over from a previous
+    session. Without this, an overnight position from days ago would still
+    show as open and the engine would try to manage it against today's
+    prices -- which is nonsense."""
+    with _lock, db() as c:
+        rows = c.execute("SELECT id, ts_entry FROM trades WHERE ts_exit IS NULL").fetchall()
+    if not rows:
+        return
+    for r in rows:
+        entry_day = dt.datetime.fromtimestamp(r["ts_entry"], tz=IST).date()
+        today_ist = dt.datetime.now(IST).date()
+        if entry_day != today_ist:
+            with _lock, db() as c:
+                c.execute("""UPDATE trades SET ts_exit=?, exit_price=?, pnl=0,
+                             exit_reason='STALE_CLEARED' WHERE id=?""",
+                          (time.time(), 0, r["id"]))
+            log("WARN", f"Cleared stale open trade from {entry_day.isoformat()}")
+
+
 def engine_loop():
     last_call_time = 0
+    last_state = None
     while True:
         try:
             if not STATE["running"]:
                 time.sleep(2); continue
+
+            # Market-hours gate — the fix for holiday / after-hours trading
+            if not is_market_open():
+                if last_state != "closed":
+                    now_ist = dt.datetime.now(IST).strftime("%H:%M")
+                    log("INFO", f"Market closed ({now_ist} IST) — engine idle. "
+                                f"Will resume at 09:15 IST on the next trading day.")
+                    last_state = "closed"
+                time.sleep(30)
+                continue
+            if last_state == "closed":
+                log("INFO", "Market open — engine resumed.")
+                last_state = "open"
+
             spot = fetch_spot()
             if spot is None:
                 time.sleep(TICK_SECONDS); continue
@@ -295,7 +352,6 @@ def engine_loop():
             if direction == "neutral":
                 continue
 
-            # DIRECTION FILTER
             if DIRECTION_FILTER == "aligned_only" and len(daily) >= 2:
                 net = daily[-1] - daily[0]
                 if net < 0 and direction == "bullish":
@@ -344,6 +400,7 @@ def close_position(spot, pnl, reason):
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    clear_stale_positions()
     threading.Thread(target=engine_loop, daemon=True).start()
     log("INFO", "Engine started")
     yield
@@ -365,6 +422,7 @@ def status():
         "fyers_ready": get_fyers_client() is not None,
         "fyers_configured": bool(FYERS_CLIENT_ID and FYERS_SECRET_KEY
                                  and FYERS_REDIRECT_URI),
+        "market_open": is_market_open(),
     }
 
 
@@ -420,6 +478,18 @@ def logs():
     return [dict(r) for r in rows]
 
 
+@app.post("/api/clear-trades")
+def clear_trades():
+    """Wipe all trades. Use this once to clear the phantom holiday trade."""
+    with _lock, db() as c:
+        c.execute("DELETE FROM trades")
+    STATE["position"] = None
+    STATE["pnl"] = 0.0
+    STATE["trades_today"] = 0
+    log("INFO", "All trades cleared")
+    return {"ok": True}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
@@ -439,6 +509,7 @@ button{background:none;border:1px solid #1E2A3D;color:#E8EEFA;padding:7px 14px;b
 button:hover{border-color:#2FE0FF;color:#2FE0FF}
 button.on{background:#22E8A6;color:#05070C;border-color:#22E8A6}
 button.fy{border-color:#A78BFA;color:#A78BFA}
+button.danger{border-color:#FF4F72;color:#FF4F72}
 main{padding:20px;max-width:900px;margin:0 auto}
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#2FE0FF;margin:18px 0 10px}
 .card{background:#0E141F;border:1px solid #1E2A3D;border-radius:10px;padding:16px}
@@ -462,6 +533,7 @@ tr:last-child td{border-bottom:none}
   <div class="stat">Trades <b id="trades">0</b></div>
   <button id="toggle" onclick="toggle()">Start</button>
   <button class="fy" id="fy-btn" onclick="connectFyers()" style="display:none">Connect Fyers</button>
+  <button class="danger" onclick="clearTrades()">Clear trades</button>
 </header>
 <main>
   <h2>Status</h2>
@@ -490,8 +562,10 @@ async function refresh(){
     btn.textContent = s.running ? "Stop" : "Start";
     btn.className = s.running ? "on" : "";
     const fy = s.fyers_ready ? "connected" : (s.fyers_configured ? "not authenticated" : "not configured");
+    const mkt = s.market_open ? "OPEN" : "closed";
     $("#status").innerHTML =
       `Running: <b>${s.running}</b> &nbsp; ` +
+      `Market: <b>${mkt}</b> &nbsp; ` +
       `Position: <b>${s.position ? s.position.dir + " @ " + fmt(s.position.entry_spot,1) : "flat"}</b> &nbsp; ` +
       `AI key: <b>${s.has_key ? "set" : "MISSING"}</b> &nbsp; ` +
       `Fyers: <b>${fy}</b>`;
@@ -527,6 +601,11 @@ async function connectFyers(){
   const r = await j("/api/fyers/login-url");
   if(r.error){alert("Fyers error: " + r.error); return;}
   window.open(r.url, "_blank");
+}
+async function clearTrades(){
+  if(!confirm("Delete ALL trades from the log? This cannot be undone.")) return;
+  await j("/api/clear-trades", {method:"POST"});
+  refresh();
 }
 setInterval(refresh, 3000);
 refresh();
