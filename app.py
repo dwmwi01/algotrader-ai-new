@@ -1,14 +1,9 @@
-"""AlgoTrader v3 — AI Analyst with decision memory, event-triggered
-entries, and scorecard export.
+"""AlgoTrader v4 — real ATM weekly option pricing via Fyers.
 
-What's new in v3:
-1. DECISION MEMORY — the AI sees its last 6 decisions with outcomes. No
-   more amnesia every 15 minutes.
-2. EVENT-TRIGGERED ENTRIES — the AI wakes the moment spot breaks prior-day
-   high/low, instead of waiting up to 15 minutes for the next timer tick.
-   A 15-minute timer still acts as a fallback so it never goes silent.
-3. SCORECARD — CSV download showing win rate by confidence bucket,
-   direction, trigger, and exit reason.
+Entry: ATM strike, next weekly expiry (Tuesday), real premium from Fyers.
+Exit: stop/target applied to the option premium P&L, not spot.
+
+Requires Fyers to be connected. Without Fyers, no entries are taken.
 """
 import csv
 import datetime as dt
@@ -46,11 +41,14 @@ TARGET = 3500.0
 MIN_CONFIDENCE = 60
 DIRECTION_FILTER = "aligned_only"
 
-TRIGGER_COOLDOWN = 300    # min seconds between AI calls even on a fresh break
-FALLBACK_INTERVAL = 900   # max seconds between AI calls
-MEMORY_SIZE = 6           # how many prior decisions to show the AI
+TRIGGER_COOLDOWN = 300
+FALLBACK_INTERVAL = 900
+MEMORY_SIZE = 6
 
 SPOT_SYMBOL = "NSE:NIFTY50-INDEX"
+STRIKE_STEP = 50
+LOT_SIZE = 65
+HARD_EXIT_TIME = (15, 15)   # force close at 15:15 IST
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
@@ -61,6 +59,9 @@ NSE_HOLIDAYS_2026 = {
     "2026-12-25",
 }
 
+MONTH_CODE = {1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7",
+              8: "8", 9: "9", 10: "O", 11: "N", 12: "D"}
+
 
 def is_market_open():
     now = dt.datetime.now(IST)
@@ -70,6 +71,28 @@ def is_market_open():
         return False
     hm = now.hour * 60 + now.minute
     return (9 * 60 + 15) <= hm < (15 * 60 + 30)
+
+
+def is_past_hard_exit():
+    now = dt.datetime.now(IST)
+    return (now.hour, now.minute) >= HARD_EXIT_TIME
+
+
+def next_weekly_expiry():
+    """NIFTY weekly expiry is Tuesday (since Sep 2025)."""
+    d = dt.datetime.now(IST).date()
+    while d.weekday() != 1:
+        d += dt.timedelta(days=1)
+    return d
+
+
+def build_option_symbol(spot, opt_type):
+    """NSE:NIFTY YY M DD STRIKE CE/PE — e.g. NSE:NIFTY26O0624500CE."""
+    strike = int(round(spot / STRIKE_STEP) * STRIKE_STEP)
+    exp = next_weekly_expiry()
+    yy = exp.strftime("%y")
+    mcode = MONTH_CODE[exp.month]
+    return f"NSE:NIFTY{yy}{mcode}{exp.day:02d}{strike}{opt_type}"
 
 
 # ---------- DB ----------
@@ -95,7 +118,8 @@ def init_db():
         """)
         for col in ("decision_confidence REAL",
                     "decision_direction TEXT",
-                    "decision_trigger TEXT"):
+                    "decision_trigger TEXT",
+                    "spot_at_entry REAL"):
             try:
                 c.execute(f"ALTER TABLE trades ADD COLUMN {col}")
             except sqlite3.OperationalError as e:
@@ -184,7 +208,7 @@ def fyers_exchange_code(code):
         return str(e)
 
 
-# ---------- DATA ----------
+# ---------- PRICE FEEDS ----------
 _SPOT_FALLBACK = {"value": 25200.0}
 
 
@@ -198,15 +222,13 @@ def fetch_spot():
                 _SPOT_FALLBACK["value"] = float(d[0]["v"]["lp"])
                 return _SPOT_FALLBACK["value"]
         except Exception as e:
-            log("WARN", f"fyers quote failed: {e}")
-
+            log("WARN", f"fyers spot failed: {e}")
     try:
         r = requests.get(
             "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI",
             params={"interval": "5m", "range": "1d"},
             timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json()
-        result = data.get("chart", {}).get("result")
+        result = r.json().get("chart", {}).get("result")
         if result:
             q = result[0].get("indicators", {}).get("quote", [{}])[0]
             closes = [c for c in q.get("close", []) if c is not None]
@@ -215,9 +237,23 @@ def fetch_spot():
                 return closes[-1]
     except Exception:
         pass
-
     _SPOT_FALLBACK["value"] += random.uniform(-5, 5)
     return round(_SPOT_FALLBACK["value"], 2)
+
+
+def fetch_option_premium(symbol):
+    """Live option LTP from Fyers. None if unavailable."""
+    fyers = get_fyers_client()
+    if fyers is None:
+        return None
+    try:
+        r = fyers.quotes({"symbols": symbol})
+        d = r.get("d") or []
+        if d:
+            return float(d[0]["v"]["lp"])
+    except Exception as e:
+        log("WARN", f"option quote failed for {symbol}: {e}")
+    return None
 
 
 def fetch_daily_closes(n=5):
@@ -226,8 +262,7 @@ def fetch_daily_closes(n=5):
             "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI",
             params={"interval": "1d", "range": "1mo"},
             timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json()
-        result = data.get("chart", {}).get("result")
+        result = r.json().get("chart", {}).get("result")
         if result:
             q = result[0].get("indicators", {}).get("quote", [{}])[0]
             closes = [c for c in q.get("close", []) if c is not None]
@@ -240,50 +275,48 @@ def fetch_daily_closes(n=5):
 
 
 def fetch_prior_day():
-    """Returns (high, low, close) of the previous trading day, or (None,None,None)."""
     fyers = get_fyers_client()
     if fyers is not None:
         try:
             end = dt.datetime.now(IST).date()
             start = end - dt.timedelta(days=10)
-            data = {
-                "symbol": SPOT_SYMBOL,
-                "resolution": "D",
-                "date_format": "1",
+            r = fyers.history(data={
+                "symbol": SPOT_SYMBOL, "resolution": "D", "date_format": "1",
                 "range_from": start.strftime("%Y-%m-%d"),
                 "range_to": end.strftime("%Y-%m-%d"),
-                "cont_flag": "1",
-            }
-            r = fyers.history(data=data)
+                "cont_flag": "1"})
             candles = r.get("candles", [])
             if len(candles) >= 2:
                 prev = candles[-2]
                 return float(prev[2]), float(prev[3]), float(prev[4])
         except Exception as e:
             log("WARN", f"fyers prior-day failed: {e}")
-
-    try:
-        r = requests.get(
-            "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI",
-            params={"interval": "1d", "range": "10d"},
-            timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json()
-        result = data.get("chart", {}).get("result", [{}])[0]
-        q = result.get("indicators", {}).get("quote", [{}])[0]
-        highs = q.get("high", [])
-        lows = q.get("low", [])
-        closes = q.get("close", [])
-        valid = [(h, l, c) for h, l, c in zip(highs, lows, closes)
-                 if h is not None and l is not None and c is not None]
-        if len(valid) >= 2:
-            h, l, c = valid[-2]
-            return float(h), float(l), float(c)
-    except Exception:
-        pass
     return None, None, None
 
 
 # ---------- AI ----------
+def format_memory(current_spot):
+    mem = STATE.get("memory") or []
+    if not mem:
+        return "(no prior decisions this session)"
+    lines = []
+    for m in reversed(mem[-MEMORY_SIZE:]):
+        line = f"{m['time']}  {m['direction']}"
+        if m.get("confidence") is not None:
+            line += f" ({m['confidence']:.0f}%)"
+        if m.get("spot") is not None:
+            line += f"  spot@{m['spot']:.0f}"
+        if m.get("trigger"):
+            line += f"  [{m['trigger']}]"
+        if m.get("outcome"):
+            line += f"  -> {m['outcome']}"
+        elif current_spot is not None and m.get("spot") is not None:
+            delta = current_spot - m["spot"]
+            line += f"  -> market now {current_spot:.0f} ({delta:+.0f})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def build_prompt(spot, daily_closes, trigger, memory_str):
     trend = ""
     if len(daily_closes) >= 2:
@@ -291,16 +324,12 @@ def build_prompt(spot, daily_closes, trigger, memory_str):
         trend = (f"\nLast {len(daily_closes)} daily closes: "
                  + ", ".join(f"{v:.0f}" for v in daily_closes)
                  + f"\nNet multi-day move: {net:+.0f} points")
-
     prior = ""
     pdh = STATE.get("prior_day_high")
     pdl = STATE.get("prior_day_low")
-    pdc = STATE.get("prior_day_close")
     if pdh is not None:
-        prior = f"\nPrior day: H={pdh:.1f} L={pdl:.1f} C={pdc:.1f}"
-
+        prior = f"\nPrior day: H={pdh:.1f} L={pdl:.1f}"
     trigger_block = f"\n\n=== TRIGGER ===\n{trigger}" if trigger else ""
-
     return f"""You are a NIFTY intraday options analyst.
 
 Current spot: {spot:.1f}{prior}{trend}{trigger_block}
@@ -308,17 +337,15 @@ Current spot: {spot:.1f}{prior}{trend}{trigger_block}
 === YOUR RECENT DECISIONS (most recent first) ===
 {memory_str}
 
-Read your own history carefully. If you have been saying the same thing
-and the market has moved your way, you were right -- do not pretend this
-is a fresh question. If you have been flip-flopping, that is itself a
-signal: the setup is unstable.
+Read your own history. If you have been saying the same thing and the
+market has moved your way, you were right. If you have been flip-flopping,
+the setup is unstable.
 
 Decide the likely direction over the next 1-2 hours.
 
 Rules:
-- If the multi-day trend is clearly down, do NOT call bullish unless you
-  can point to specific evidence the trend is turning.
-- "neutral" is a legitimate and often correct answer.
+- If the multi-day trend is clearly down, do NOT call bullish.
+- "neutral" is a legitimate answer.
 - Confidence 60+ means strong alignment of multiple signals.
 
 Respond with ONLY JSON:
@@ -328,8 +355,7 @@ Respond with ONLY JSON:
 def ask_claude(spot, daily_closes, trigger):
     if not ANTHROPIC_KEY:
         return None
-    memory_str = format_memory(spot)
-    prompt = build_prompt(spot, daily_closes, trigger, memory_str)
+    prompt = build_prompt(spot, daily_closes, trigger, format_memory(spot))
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -352,33 +378,8 @@ def ask_claude(spot, daily_closes, trigger):
         return None
 
 
-def format_memory(current_spot=None):
-    mem = STATE.get("memory") or []
-    if not mem:
-        return "(no prior decisions this session)"
-    lines = []
-    for m in reversed(mem[-MEMORY_SIZE:]):
-        line = f"{m['time']}  {m['direction']}"
-        if m.get("confidence") is not None:
-            line += f" ({m['confidence']:.0f}%)"
-        if m.get("spot") is not None:
-            line += f"  spot@{m['spot']:.0f}"
-        if m.get("trigger"):
-            line += f"  [{m['trigger']}]"
-        if m.get("outcome"):
-            line += f"  -> {m['outcome']}"
-        elif current_spot is not None and m.get("spot") is not None:
-            delta = current_spot - m["spot"]
-            line += f"  -> market now {current_spot:.0f} ({delta:+.0f})"
-        lines.append(line)
-    return "\n".join(lines)
-
-
 # ---------- TRIGGERS ----------
 def check_trigger(spot):
-    """Return a trigger description if a fresh break happened, else None.
-    A break fires once -- subsequent ticks inside the same break do nothing
-    until price returns inside the range and breaks again."""
     pdh = STATE.get("prior_day_high")
     pdl = STATE.get("prior_day_low")
     if pdh is None or pdl is None:
@@ -411,8 +412,7 @@ def clear_stale_positions():
         rows = c.execute("SELECT id, ts_entry FROM trades WHERE ts_exit IS NULL").fetchall()
     for r in rows:
         entry_day = dt.datetime.fromtimestamp(r["ts_entry"], tz=IST).date()
-        today_ist = dt.datetime.now(IST).date()
-        if entry_day != today_ist:
+        if entry_day != dt.datetime.now(IST).date():
             with _lock, db() as c:
                 c.execute("""UPDATE trades SET ts_exit=?, exit_price=?, pnl=0,
                              exit_reason='STALE_CLEARED' WHERE id=?""",
@@ -430,43 +430,45 @@ def engine_loop():
 
             if not is_market_open():
                 if last_state != "closed":
-                    now_ist = dt.datetime.now(IST).strftime("%H:%M")
-                    log("INFO", f"Market closed ({now_ist} IST) — engine idle.")
+                    log("INFO", "Market closed — engine idle.")
                     last_state = "closed"
                 time.sleep(30); continue
 
             if last_state == "closed":
                 log("INFO", "Market open — engine resumed.")
                 last_state = "open"
-                # Load fresh prior-day levels for the new session
                 h, l, c = fetch_prior_day()
                 if h is not None:
                     STATE["prior_day_high"] = h
                     STATE["prior_day_low"] = l
                     STATE["prior_day_close"] = c
                     STATE["last_break_dir"] = None
-                    log("INFO", f"Prior day loaded: H={h:.1f} L={l:.1f} C={c:.1f}")
+                    log("INFO", f"Prior day: H={h:.1f} L={l:.1f} C={c:.1f}")
 
             spot = fetch_spot()
             if spot is None:
                 time.sleep(TICK_SECONDS); continue
             STATE["last_spot"] = spot
 
-            # Manage open position first
+            # ---- manage open position on OPTION PREMIUM ----
             if STATE["position"]:
                 pos = STATE["position"]
-                mult = 100 if pos["dir"] == "bullish" else -100
-                mtm = (spot - pos["entry_spot"]) * mult
+                ltp = fetch_option_premium(pos["symbol"])
+                if ltp is None:
+                    time.sleep(TICK_SECONDS); continue
+                mtm = (ltp - pos["entry_premium"]) * pos["qty"] * LOT_SIZE
                 if mtm <= -MAX_LOSS:
-                    close_position(spot, mtm, "STOPLOSS")
+                    close_position(ltp, mtm, "STOPLOSS")
                 elif mtm >= TARGET:
-                    close_position(spot, mtm, "TARGET")
+                    close_position(ltp, mtm, "TARGET")
+                elif is_past_hard_exit():
+                    close_position(ltp, mtm, "TIME_EXIT")
                 time.sleep(TICK_SECONDS); continue
 
             if STATE["trades_today"] >= 3:
                 time.sleep(30); continue
 
-            # Decide whether to call the AI this tick
+            # ---- decide whether to call the AI ----
             fresh_trigger = check_trigger(spot)
             now = time.time()
             since_last = now - last_call_time
@@ -493,7 +495,6 @@ def engine_loop():
             log("INFO", f"AI [{trigger_label}]: {decision.get('direction')} "
                         f"({decision.get('confidence')}) — {decision.get('reasoning','')}")
 
-            # Record in memory before filters, so we see what the AI actually said
             mem_entry = {
                 "time": now_ist_str,
                 "direction": decision.get("direction"),
@@ -532,37 +533,46 @@ def engine_loop():
 
 
 def open_position(spot, direction, confidence, reasoning, trigger, memory_index=None):
-    tid = uuid.uuid4().hex[:10]
     side = "CE" if direction == "bullish" else "PE"
+    symbol = build_option_symbol(spot, side)
+    premium = fetch_option_premium(symbol)
+    if premium is None:
+        log("WARN", f"could not fetch premium for {symbol} — skipping entry")
+        return False
+    tid = uuid.uuid4().hex[:10]
     with _lock, db() as c:
         c.execute("""INSERT INTO trades
             (id, ts_entry, symbol, side, qty, entry_price, reasoning,
-             decision_confidence, decision_direction, decision_trigger)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (tid, time.time(), f"NIFTY-{side}", side, 1, spot, reasoning,
-             confidence, direction, trigger or "timer"))
+             decision_confidence, decision_direction, decision_trigger,
+             spot_at_entry)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (tid, time.time(), symbol, side, 1, premium, reasoning,
+             confidence, direction, trigger or "timer", spot))
     STATE["position"] = {
-        "id": tid, "entry_spot": spot, "dir": direction,
+        "id": tid, "entry_premium": premium, "entry_spot": spot,
+        "symbol": symbol, "dir": direction, "qty": 1,
         "memory_index": memory_index,
     }
     STATE["trades_today"] += 1
-    log("INFO", f"ENTER {side} at spot {spot:.1f} (conf {confidence}, trigger: {trigger})")
+    log("INFO", f"ENTER {symbol} @ ₹{premium:.2f} "
+                f"(spot {spot:.1f}, conf {confidence}, trigger: {trigger})")
+    return True
 
 
-def close_position(spot, pnl, reason):
+def close_position(exit_premium, pnl, reason):
     pos = STATE["position"]
     with _lock, db() as c:
         c.execute("""UPDATE trades SET ts_exit=?, exit_price=?, pnl=?,
                      exit_reason=? WHERE id=?""",
-                  (time.time(), spot, pnl, reason, pos["id"]))
-    # Attach outcome to the memory entry that led to this trade
+                  (time.time(), exit_premium, pnl, reason, pos["id"]))
     idx = pos.get("memory_index")
     if idx is not None and 0 <= idx < len(STATE["memory"]):
         tag = "WIN" if pnl > 0 else "LOSS"
         STATE["memory"][idx]["outcome"] = f"{tag} {pnl:+.0f} ({reason})"
     STATE["position"] = None
     STATE["pnl"] += pnl
-    log("INFO", f"EXIT pnl={pnl:+.0f} ({reason})")
+    log("INFO", f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} "
+                f"pnl={pnl:+.0f} ({reason})")
 
 
 # ---------- SCORECARD ----------
@@ -575,7 +585,6 @@ def build_scorecard_csv():
 
     buf = io.StringIO()
     w = csv.writer(buf)
-
     total = len(trades)
     wins = sum(1 for t in trades if (t.get("pnl") or 0) > 0)
     total_pnl = sum((t.get("pnl") or 0) for t in trades)
@@ -657,9 +666,19 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/api/status")
 def status():
+    pos = STATE.get("position")
+    pos_view = None
+    if pos:
+        ltp = fetch_option_premium(pos["symbol"])
+        pos_view = {
+            "symbol": pos["symbol"], "dir": pos["dir"],
+            "entry_premium": pos["entry_premium"], "ltp": ltp,
+            "mtm": round((ltp - pos["entry_premium"]) * pos["qty"] * LOT_SIZE, 1)
+                   if ltp else None,
+        }
     return {
         "running": STATE["running"],
-        "position": STATE["position"],
+        "position": pos_view,
         "pnl": round(STATE["pnl"], 2),
         "trades_today": STATE["trades_today"],
         "last_call": STATE["last_call"],
@@ -740,9 +759,8 @@ def clear_trades():
 
 @app.get("/api/scorecard")
 def scorecard():
-    csv_content = build_scorecard_csv()
     return PlainTextResponse(
-        csv_content,
+        build_scorecard_csv(),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="scorecard.csv"'})
 
@@ -801,9 +819,11 @@ tr:last-child td{border-bottom:none}
   <div class="card" id="status">Loading…</div>
   <h2>Latest AI call</h2>
   <div class="card" id="ai">No calls yet.</div>
+  <h2>Open position</h2>
+  <div class="card" id="openpos">Flat.</div>
   <h2>Trades</h2>
   <div class="card"><table>
-    <thead><tr><th>Time</th><th>Side</th><th>Conf</th><th>Trigger</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr></thead>
+    <thead><tr><th>Time</th><th>Symbol</th><th>Conf</th><th>Trigger</th><th>Entry ₹</th><th>Exit ₹</th><th>P&L</th><th>Reason</th></tr></thead>
     <tbody id="trades-table"></tbody></table></div>
   <h2>Log</h2>
   <div class="card"><div id="logs"></div></div>
@@ -825,16 +845,14 @@ async function refresh(){
     const fy = s.fyers_ready ? "connected" : (s.fyers_configured ? "not authenticated" : "not configured");
     const mkt = s.market_open ? "OPEN" : "closed";
     const pd = s.prior_day_high != null
-      ? `PD H/L: <b>${fmt(s.prior_day_high,0)}/${fmt(s.prior_day_low,0)}</b> &nbsp;`
-      : `PD: <b>—</b> &nbsp;`;
+      ? `PD: <b>${fmt(s.prior_day_high,0)}/${fmt(s.prior_day_low,0)}</b> &nbsp;`
+      : "";
     $("#status").innerHTML =
       `Running: <b>${s.running}</b> &nbsp; ` +
       `Market: <b>${mkt}</b> &nbsp; ` +
-      `Position: <b>${s.position ? s.position.dir + " @ " + fmt(s.position.entry_spot,1) : "flat"}</b> &nbsp; ` +
-      pd +
       `AI key: <b>${s.has_key ? "set" : "MISSING"}</b> &nbsp; ` +
       `Fyers: <b>${fy}</b> &nbsp; ` +
-      `Memory: <b>${s.memory_count}</b> calls`;
+      `Memory: <b>${s.memory_count}</b> &nbsp; ${pd}`;
     $("#fy-btn").style.display = (s.fyers_configured && !s.fyers_ready) ? "inline-block" : "none";
     if(s.last_call){
       const trig = s.last_call.trigger ? ` <span style="color:#84CC16">[${s.last_call.trigger}]</span>` : "";
@@ -842,16 +860,25 @@ async function refresh(){
         `<div class="ai-call"><b>${s.last_call.direction}</b> (${s.last_call.confidence}%) ` +
         `at spot ${fmt(s.last_call.spot,1)}${trig}<br>${s.last_call.reasoning || ""}</div>`;
     }
+    if(s.position){
+      $("#openpos").innerHTML =
+        `<b>${s.position.symbol}</b> &nbsp; ` +
+        `entry ₹${fmt(s.position.entry_premium,2)} &nbsp; ` +
+        `LTP ₹${fmt(s.position.ltp,2)} &nbsp; ` +
+        `MTM <b class="${s.position.mtm>0?'pos':s.position.mtm<0?'neg':''}">${fmt(s.position.mtm,0)}</b>`;
+    } else {
+      $("#openpos").textContent = "Flat.";
+    }
   }catch(e){}
   try{
     const t = await j("/api/trades");
     $("#trades-table").innerHTML = t.map(x =>
       `<tr><td>${new Date(x.ts_entry*1000).toLocaleTimeString()}</td>
-       <td>${x.side}</td>
+       <td style="font-size:11px">${x.symbol}</td>
        <td>${x.decision_confidence != null ? fmt(x.decision_confidence,0) : '—'}</td>
        <td style="color:#84CC16;font-size:11px">${x.decision_trigger||''}</td>
-       <td>${fmt(x.entry_price,1)}</td>
-       <td>${fmt(x.exit_price,1)}</td>
+       <td>${fmt(x.entry_price,2)}</td>
+       <td>${fmt(x.exit_price,2)}</td>
        <td class="${x.pnl>0?'pos':x.pnl<0?'neg':''}">${x.pnl==null?'open':fmt(x.pnl,0)}</td>
        <td>${x.exit_reason||''}</td></tr>`).join("");
   }catch(e){}
@@ -873,7 +900,7 @@ async function connectFyers(){
   window.open(r.url, "_blank");
 }
 async function clearTrades(){
-  if(!confirm("Delete ALL trades from the log? This cannot be undone.")) return;
+  if(!confirm("Delete ALL trades?")) return;
   await j("/api/clear-trades", {method:"POST"});
   refresh();
 }
