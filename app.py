@@ -38,25 +38,13 @@ LOT_SIZE = 65
 RANGE_END = (9, 30)
 HARD_EXIT = (15, 0)
 
-# --- Stop / target ---------------------------------------------------------
-MAX_LOSS = 2200.0                 # rupee stop (was 2000; slightly wider)
-STOP_PCT_OF_PREMIUM = 22.0        # OR exit if option loses 22% of entry premium
+MAX_LOSS = 2000.0
 TARGET = 3500.0
-
-# --- Trail: arm later, give back less --------------------------------------
-TRAIL_ARM_PCT = 65.0              # was 50
-TRAIL_GIVEBACK_PCT = 25.0         # was 40
-
-# --- Anti-whipsaw ----------------------------------------------------------
-DIRECTION_COOLDOWN_SEC = 1800     # 30 min no same-side re-entry after a stop
-
-# --- Realistic costs -------------------------------------------------------
-# Round-trip brokerage + STT + exchange + GST + stamp + ~1 tick slippage.
-# Deducted from every closed trade.
-COST_PER_TRADE = 230.0
+TRAIL_ARM_PCT = 50.0
+TRAIL_GIVEBACK_PCT = 40.0
 
 ACCOUNT_MAX_DAILY_LOSS = 20000.0
-ACCOUNT_MAX_TRADES = 8            # was 12 — force selectivity
+ACCOUNT_MAX_TRADES = 12
 
 AI_MODEL = "claude-sonnet-5"
 AI_INTERVAL_SEC = 900
@@ -75,16 +63,10 @@ RS_ORB_MAX_TRADES = 2
 RS_FADE_BREAK_BUFFER = 5.0
 RS_FADE_RETURN_BUFFER = 3.0
 RS_FADE_HOLD_TIMEOUT_SEC = 90
-RS_FADE_COOLDOWN_SEC = 300        # was 90
-RS_FADE_MAX_TRADES = 2            # was 4
+RS_FADE_COOLDOWN_SEC = 90
+RS_FADE_MAX_TRADES = 4
 
 DEFAULT_VIX = 13.0
-
-# Backtest entry sanity -- refuse trades whose target needs > this multiple
-# of the current premium in a single-unit move. 1.0 means the option would
-# need to double+ to hit target, which the smooth Black-Scholes repricing
-# would deliver unreliably. Confirmed as the source of "100% win rate"
-# contamination on cheap OTM options near expiry.
 MAX_TARGET_MOVE_MULTIPLE = 1.0
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -309,6 +291,13 @@ def get_fyers_client():
             return None
 
 
+def clear_fyers_client():
+    global _fyers_client
+    with _fyers_lock:
+        _fyers_client = None
+    kv_set("fyers_token", "")
+
+
 def fyers_login_url():
     if not HAVE_FYERS:
         return None, "fyers-apiv3 not installed"
@@ -459,9 +448,7 @@ def fetch_daily_closes(n=5):
 def _new_strategy(key, name, description, **extra):
     base = {"key": key, "name": name, "description": description,
             "enabled": False, "position": None, "pnl": 0.0,
-            "trades_today": 0, "session_day": None, "last_action": None,
-            "last_stop_side": None, "last_stop_at": None,
-            "recent_spots": []}
+            "trades_today": 0, "session_day": None, "last_action": None}
     base.update(extra)
     return base
 
@@ -506,9 +493,6 @@ def reset_strategy_session(strat):
     strat["pnl"] = 0.0
     strat["trades_today"] = 0
     strat["last_action"] = None
-    strat["last_stop_side"] = None
-    strat["last_stop_at"] = None
-    strat["recent_spots"] = []
     if strat["key"] == "ai_analyst":
         strat["memory"] = []
         strat["last_call"] = None
@@ -544,26 +528,6 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
                        direction=None, reasoning=None):
     if strat["position"] is not None:
         return False
-
-    # --- Anti-whipsaw: skip same-side re-entry right after a stop ---
-    if strat.get("last_stop_side") == side and strat.get("last_stop_at"):
-        elapsed = _sim_now_epoch() - _sf(strat["last_stop_at"])
-        if elapsed < DIRECTION_COOLDOWN_SEC:
-            log("INFO", f"[{strat['name']}] skip {side} — "
-                        f"cooldown {int(elapsed)}s after SL")
-            return False
-
-    # --- Intraday trend filter: don't fight the 20-period EMA ---
-    rs = strat.get("recent_spots") or []
-    if len(rs) >= 20:
-        ema20 = sum(rs[-20:]) / 20.0
-        if side == "CE" and spot < ema20 - 5:
-            log("INFO", f"[{strat['name']}] skip CE — spot {spot:.0f} < EMA20 {ema20:.0f}")
-            return False
-        if side == "PE" and spot > ema20 + 5:
-            log("INFO", f"[{strat['name']}] skip PE — spot {spot:.0f} > EMA20 {ema20:.0f}")
-            return False
-
     ok, why = can_open()
     if not ok:
         log("WARN", f"[{strat['name']}] blocked: {why}")
@@ -574,7 +538,6 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
         log("WARN", f"[{strat['name']}] could not fetch premium for {symbol}")
         return False
 
-    # ---- ENTRY SANITY: refuse trades whose target needs an unrealistic move ----
     if premium > 0:
         move_needed_per_unit = abs(TARGET) / (1 * LOT_SIZE)
         if move_needed_per_unit > premium * MAX_TARGET_MOVE_MULTIPLE:
@@ -615,8 +578,7 @@ def close_position_for(strat, exit_premium, pnl, reason):
     if pos is None:
         return
     exit_ts = _sim_now_epoch()
-    # Deduct realistic round-trip costs from every closed trade.
-    pnl = _sf(pnl, 0.0) - COST_PER_TRADE
+    pnl = _sf(pnl, 0.0)
     exit_premium = _sf(exit_premium, 0.0)
     if not _SIM["active"]:
         with _lock, db() as c:
@@ -626,9 +588,6 @@ def close_position_for(strat, exit_premium, pnl, reason):
     strat["pnl"] = _sf(strat["pnl"]) + pnl
     strat["last_action"] = f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} pnl={pnl:+.0f} ({reason})"
     log("INFO", f"[{strat['name']}] {strat['last_action']}")
-    if reason == "STOPLOSS":
-        strat["last_stop_side"] = pos["side"]
-        strat["last_stop_at"] = exit_ts
     if strat["key"] == "ai_analyst" and strat["memory"]:
         strat["memory"][-1]["outcome"] = (
             f"{'WIN' if pnl > 0 else 'LOSS'} {pnl:+.0f} ({reason})")
@@ -656,30 +615,21 @@ def manage_position_for(strat, spot, hm):
     mtm = (ltp - entry) * qty * LOT_SIZE
     if mtm > _sf(pos["peak_mtm"]):
         pos["peak_mtm"] = mtm
-
-    # Arm breakeven only after 1:1 (previously: TRAIL_ARM_PCT% of target).
-    if not pos["breakeven_armed"] and _sf(pos["peak_mtm"]) >= abs(MAX_LOSS):
+    if not pos["breakeven_armed"] and \
+            _sf(pos["peak_mtm"]) >= abs(TARGET) * (TRAIL_ARM_PCT / 100.0):
         pos["breakeven_armed"] = True
-
-    # Stop loss: rupee-based OR premium-percentage, whichever hits first.
-    premium_loss_pct = ((entry - ltp) / entry * 100.0) if entry > 0 else 0.0
-    if mtm <= -abs(MAX_LOSS) or premium_loss_pct >= STOP_PCT_OF_PREMIUM:
+    if mtm <= -abs(MAX_LOSS):
         close_position_for(strat, ltp, mtm, "STOPLOSS"); return
-
-    # Breakeven stop: lock a small positive cushion (was: mtm <= 0).
-    if pos["breakeven_armed"] and mtm <= abs(MAX_LOSS) * 0.10:
+    if pos["breakeven_armed"] and mtm <= 0:
         close_position_for(strat, ltp, mtm, "BREAKEVEN_STOP"); return
-
     if _sf(pos["peak_mtm"]) >= abs(TARGET):
         floor = abs(TARGET) + (_sf(pos["peak_mtm"]) - abs(TARGET)) * (1 - TRAIL_GIVEBACK_PCT / 100.0)
         if mtm <= floor:
             close_position_for(strat, ltp, mtm, "PROFIT_TRAIL"); return
-
     if strat["key"] == "regime_switcher" and strat["active_strategy"] == "or_fade":
         now_epoch = _sim_now_epoch()
         if now_epoch - _sf(pos["entry_ts"]) >= RS_FADE_HOLD_TIMEOUT_SEC:
             close_position_for(strat, ltp, mtm, "HOLD_TIMEOUT"); return
-
     if is_at_or_after(hm, HARD_EXIT):
         close_position_for(strat, ltp, mtm, "TIME_EXIT"); return
 
@@ -760,11 +710,6 @@ def ai_ask_claude(strat, spot, daily_closes):
 
 
 def tick_ai_analyst(strat, spot, hm):
-    rs_list = strat["recent_spots"]
-    rs_list.append(spot)
-    if len(rs_list) > 40:
-        del rs_list[:-40]
-
     if int(strat["trades_today"] or 0) >= AI_MAX_TRADES:
         return
     if is_at_or_after(hm, HARD_EXIT):
@@ -915,11 +860,6 @@ def rs_or_fade_tick(strat, spot, hm):
 
 
 def tick_regime_switcher(strat, spot, hm):
-    rs_list = strat["recent_spots"]
-    rs_list.append(spot)
-    if len(rs_list) > 40:
-        del rs_list[:-40]
-
     today = _now_ist().date().isoformat()
     if strat["regime_decided_day"] != today:
         regime, details = classify_regime(strat)
@@ -1377,6 +1317,13 @@ def fyers_url():
     return {"url": url}
 
 
+@app.post("/api/fyers/disconnect")
+def fyers_disconnect():
+    clear_fyers_client()
+    log("INFO", "Fyers token cleared — re-authentication required")
+    return {"ok": True}
+
+
 @app.get("/callback", response_class=HTMLResponse)
 def fyers_callback(auth_code: str = ""):
     if not auth_code:
@@ -1614,7 +1561,7 @@ h2{{font-size:10.5px}}
   </div>
   <div class="header-actions">
     <button id="toggle" class="primary" onclick="toggleEngine()">Start engine</button>
-    <button class="fyers" id="fy-btn" onclick="connectFyers()" style="display:none">Fyers</button>
+    <button class="fyers" id="fy-btn" onclick="connectFyers()" style="display:none">Connect Fyers</button>
     <button class="bt" onclick="openBacktest()">Backtest</button>
     <a href="/api/scorecard" download style="text-decoration:none"><button class="score">Scorecard</button></a>
     <button class="danger" onclick="clearTrades()">Clear</button>
@@ -1657,7 +1604,6 @@ z-index:200;overflow-y:auto;padding:30px 16px;backdrop-filter:blur(3px)">
       Replays historical 5-min NIFTY candles through the real Regime Switcher.
       Option premiums are estimated with Black-Scholes using India VIX as the IV input.
       Entries where the target requires the option to more than double in premium are refused.
-      A round-trip cost of ₹230 per trade is deducted from every exit.
     </p>
     <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
       <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--dim)">
@@ -1726,7 +1672,16 @@ async function refresh(){{
     const btn = $("#toggle");
     btn.textContent = s.engine_running ? "Stop engine" : "Start engine";
     btn.className = s.engine_running ? "danger" : "primary";
-    $("#fy-btn").style.display = (s.fyers_configured && !s.fyers_ready) ? "inline-flex" : "none";
+
+    // Always show the Fyers button when configured. Label reflects
+    // whether a token exists so you can force a fresh login any time.
+    const fyBtn = $("#fy-btn");
+    if(s.fyers_configured){{
+      fyBtn.style.display = "inline-flex";
+      fyBtn.textContent = s.fyers_ready ? "Reconnect Fyers" : "Connect Fyers";
+    }} else {{
+      fyBtn.style.display = "none";
+    }}
 
     $("#strat-grid").innerHTML = s.strategies.map(str => {{
       const onClass = str.enabled ? "enabled" : "";
@@ -1864,10 +1819,13 @@ function showBacktestResult(r){{
 }}
 
 async function connectFyers(){{
+  // Clear any stored token first so the new login always wins.
+  try{{ await j("/api/fyers/disconnect", {{method:"POST"}}); }}catch(e){{}}
   const r = await j("/api/fyers/login-url");
   if(r.error){{alert("Fyers error: " + r.error); return;}}
   window.open(r.url, "_blank");
 }}
+
 async function clearTrades(){{
   if(!confirm("Delete ALL trades?")) return;
   await j("/api/clear-trades", {{method:"POST"}});
