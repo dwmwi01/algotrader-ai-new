@@ -1,4 +1,4 @@
-"""AI ALGO — two strategies, backtesting for the mechanical one."""
+"""AI ALGO — AI Analyst strategy, live/paper only."""
 import csv
 import datetime as dt
 import io
@@ -35,58 +35,30 @@ VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 STRIKE_STEP = 50
 LOT_SIZE = 65
 
-RANGE_END = (9, 30)
 HARD_EXIT = (15, 0)
 
-# --- Stop / target ---
-# Rupee stop only -- a premium-percentage stop was tried and rejected: it
-# fired earlier than the rupee stop on any option priced below ~Rs 140,
-# which spiked STOPLOSS count from 125 to 159 in a 12-month backtest.
 MAX_LOSS = 2000.0
 TARGET = 3500.0
-
-# --- Trail: arm later, give back less ---
-TRAIL_ARM_PCT = 65.0              # was 50 -- don't trail until 65% of target
-TRAIL_GIVEBACK_PCT = 25.0         # was 40 -- keep more of the runner
+TRAIL_ARM_PCT = 65.0
+TRAIL_GIVEBACK_PCT = 25.0
 
 # --- Anti-whipsaw ---
-DIRECTION_COOLDOWN_SEC = 1800     # 30 min no same-side re-entry after a stop
+DIRECTION_COOLDOWN_SEC = 1800     # after a STOPLOSS, no same-side re-entry for 30 min
+WIN_COOLDOWN_SEC = 900            # after a closed WINNER, no entries at all for 15 min
+RE_ENTRY_MIN_CONFIDENCE = 67      # same-direction re-entry within 2*WIN_COOLDOWN needs this
 
-# --- Realistic costs ---
-# Round-trip brokerage + STT + exchange + GST + stamp + ~1 tick slippage.
-# Deducted from every closed trade. Without this the backtest lies.
 COST_PER_TRADE = 230.0
-
 ACCOUNT_MAX_DAILY_LOSS = 20000.0
-ACCOUNT_MAX_TRADES = 8            # was 12 -- force selectivity
+ACCOUNT_MAX_TRADES = 8
 
 AI_MODEL = "claude-sonnet-5"
-AI_INTERVAL_SEC = 900
+AI_INTERVAL_SEC = 600             # 10 min checks
 AI_MIN_CONFIDENCE = 60
 AI_MEMORY_SIZE = 6
 AI_DAILY_LOOKBACK = 5
 AI_MAX_TRADES = 3
 
-RS_ATR_PERIOD = 14
-RS_LOOKBACK = 20
-RS_RECENT = 5
-RS_TREND_RATIO = 1.15
-RS_RANGE_RATIO = 0.85
-RS_ORB_BREAK_BUFFER = 5.0
-RS_ORB_MAX_TRADES = 2
-RS_FADE_BREAK_BUFFER = 5.0
-RS_FADE_RETURN_BUFFER = 3.0
-RS_FADE_HOLD_TIMEOUT_SEC = 90
-RS_FADE_COOLDOWN_SEC = 300        # was 90
-RS_FADE_MAX_TRADES = 2            # was 4
-
 DEFAULT_VIX = 13.0
-
-# Backtest entry sanity -- refuse trades whose target needs > this multiple
-# of the current premium in a single-unit move. 1.0 means the option would
-# need to double+ to hit target, which the smooth Black-Scholes repricing
-# would deliver unreliably. Confirmed as the source of "100% win rate"
-# contamination on cheap OTM options near expiry.
 MAX_TARGET_MOVE_MULTIPLE = 1.0
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -108,7 +80,6 @@ LOGO_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 <path d="M 325 175 L 390 155 L 372 220 Z" fill="#FFFFFF"/></svg>'''
 
 
-# ---------- SIMULATION ----------
 _SIM = {
     "active": False,
     "now": None,
@@ -181,7 +152,6 @@ def build_option_symbol(spot, opt_type):
     return f"NSE:NIFTY{exp.strftime('%y')}{MONTH_CODE[exp.month]}{exp.day:02d}{strike}{opt_type}"
 
 
-# ---------- BLACK-SCHOLES ----------
 def _norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
@@ -247,7 +217,6 @@ def _sim_option_premium(symbol):
     return _bs_price(spot, strike, dte, vix, opt_type)
 
 
-# ---------- DB ----------
 _lock = threading.Lock()
 
 
@@ -287,7 +256,6 @@ def kv_get(k):
     return r["v"] if r else None
 
 
-# ---------- FYERS ----------
 _fyers_client = None
 _fyers_lock = threading.Lock()
 
@@ -309,6 +277,13 @@ def get_fyers_client():
         except Exception as e:
             log("ERROR", f"fyers init failed: {e}")
             return None
+
+
+def clear_fyers_client():
+    global _fyers_client
+    with _fyers_lock:
+        _fyers_client = None
+    kv_set("fyers_token", "")
 
 
 def fyers_login_url():
@@ -457,12 +432,12 @@ def fetch_daily_closes(n=5):
     return [base + i * 15 for i in range(n)]
 
 
-# ---------- STRATEGY STATE ----------
 def _new_strategy(key, name, description, **extra):
     base = {"key": key, "name": name, "description": description,
             "enabled": False, "position": None, "pnl": 0.0,
             "trades_today": 0, "session_day": None, "last_action": None,
             "last_stop_side": None, "last_stop_at": None,
+            "last_win_at": None,
             "recent_spots": []}
     base.update(extra)
     return base
@@ -471,15 +446,9 @@ def _new_strategy(key, name, description, **extra):
 STRATEGIES = {
     "ai_analyst": _new_strategy(
         "ai_analyst", "AI Analyst",
-        "Claude reads price action + multi-day trend every 15 min and calls direction. Filters bullish calls in a down market. Memory of last 6 calls. Needs ANTHROPIC_API_KEY.",
+        "Claude reads price action + multi-day trend every 10 min and calls direction. Filters bullish calls in a down market. Memory of last 6 calls. 15-min cooldown after any win; same-direction re-entry within 30 min needs 67% conviction. Needs ANTHROPIC_API_KEY.",
         memory=[], last_call=None, last_ai_call_at=0.0,
         daily_closes=[], daily_fetched_day=None),
-    "regime_switcher": _new_strategy(
-        "regime_switcher", "Regime Switcher",
-        "Reads ATR every morning. Trending days → Scalp ORB. Range days → OR Fade. Mechanical, no LLM.",
-        range_high=None, range_low=None, range_locked=False,
-        regime=None, regime_details=None, regime_decided_day=None,
-        active_strategy=None, fade_broken_side=None, fade_last_exit_at=None),
 }
 
 ACCOUNT = {"engine_running": False, "last_spot": None, "last_tick": None, "kill": False}
@@ -510,6 +479,7 @@ def reset_strategy_session(strat):
     strat["last_action"] = None
     strat["last_stop_side"] = None
     strat["last_stop_at"] = None
+    strat["last_win_at"] = None
     strat["recent_spots"] = []
     if strat["key"] == "ai_analyst":
         strat["memory"] = []
@@ -517,16 +487,6 @@ def reset_strategy_session(strat):
         strat["last_ai_call_at"] = 0.0
         strat["daily_closes"] = []
         strat["daily_fetched_day"] = None
-    elif strat["key"] == "regime_switcher":
-        strat["range_high"] = None
-        strat["range_low"] = None
-        strat["range_locked"] = False
-        strat["regime"] = None
-        strat["regime_details"] = None
-        strat["regime_decided_day"] = None
-        strat["active_strategy"] = None
-        strat["fade_broken_side"] = None
-        strat["fade_last_exit_at"] = None
 
 
 def clear_stale_positions():
@@ -541,11 +501,18 @@ def clear_stale_positions():
                           (time.time(), 0, r["id"]))
 
 
-# ---------- POSITION ----------
 def open_position_for(strat, side, spot, reason="", confidence=None,
                        direction=None, reasoning=None):
     if strat["position"] is not None:
         return False
+
+    # --- Post-win cooldown: no entries within WIN_COOLDOWN_SEC of a win ---
+    if strat.get("last_win_at"):
+        elapsed = _sim_now_epoch() - _sf(strat["last_win_at"])
+        if elapsed < WIN_COOLDOWN_SEC:
+            log("INFO", f"[{strat['name']}] skip — {int(elapsed)}s since last win "
+                        f"(cooldown {WIN_COOLDOWN_SEC}s)")
+            return False
 
     # --- Anti-whipsaw: skip same-side re-entry right after a stop ---
     if strat.get("last_stop_side") == side and strat.get("last_stop_at"):
@@ -576,15 +543,13 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
         log("WARN", f"[{strat['name']}] could not fetch premium for {symbol}")
         return False
 
-    # ---- ENTRY SANITY: refuse trades whose target needs an unrealistic move ----
     if premium > 0:
         move_needed_per_unit = abs(TARGET) / (1 * LOT_SIZE)
         if move_needed_per_unit > premium * MAX_TARGET_MOVE_MULTIPLE:
             log("WARN",
                 f"[{strat['name']}] SKIP {symbol} — premium ₹{premium:.2f}; "
                 f"target needs ₹{move_needed_per_unit:.2f}/unit move "
-                f"({100 * move_needed_per_unit / premium:.0f}% of premium). "
-                f"Contaminated cheap-option zone.")
+                f"({100 * move_needed_per_unit / premium:.0f}% of premium).")
             return False
 
     tid = uuid.uuid4().hex[:10]
@@ -617,8 +582,7 @@ def close_position_for(strat, exit_premium, pnl, reason):
     if pos is None:
         return
     exit_ts = _sim_now_epoch()
-    # Deduct realistic round-trip costs from every closed trade.
-    pnl = _sf(pnl, 0.0) - COST_PER_TRADE
+    pnl = _sf(pnl, 0.0)
     exit_premium = _sf(exit_premium, 0.0)
     if not _SIM["active"]:
         with _lock, db() as c:
@@ -628,14 +592,21 @@ def close_position_for(strat, exit_premium, pnl, reason):
     strat["pnl"] = _sf(strat["pnl"]) + pnl
     strat["last_action"] = f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} pnl={pnl:+.0f} ({reason})"
     log("INFO", f"[{strat['name']}] {strat['last_action']}")
+
+    # Mark win time for post-win cooldown
     if reason == "STOPLOSS":
         strat["last_stop_side"] = pos["side"]
         strat["last_stop_at"] = exit_ts
+    if reason in ("PROFIT_TRAIL", "TIME_EXIT") and pnl > 0:
+        strat["last_win_at"] = exit_ts
+
+    # Memory format with [trend exhausted] marker
     if strat["key"] == "ai_analyst" and strat["memory"]:
-        strat["memory"][-1]["outcome"] = (
-            f"{'WIN' if pnl > 0 else 'LOSS'} {pnl:+.0f} ({reason})")
-    if strat["key"] == "regime_switcher" and reason != "MARKET_CLOSED":
-        strat["fade_last_exit_at"] = exit_ts
+        outcome = f"{'WIN' if pnl > 0 else 'LOSS'} {pnl:+.0f} via {reason}"
+        if reason == "PROFIT_TRAIL":
+            outcome += " [trend exhausted]"
+        strat["memory"][-1]["outcome"] = outcome
+
     if _SIM["active"]:
         for t in BACKTEST["current_trades"]:
             if t["id"] == pos["id"]:
@@ -659,15 +630,12 @@ def manage_position_for(strat, spot, hm):
     if mtm > _sf(pos["peak_mtm"]):
         pos["peak_mtm"] = mtm
 
-    # Arm breakeven only after 1:1 (previously: TRAIL_ARM_PCT% of target).
     if not pos["breakeven_armed"] and _sf(pos["peak_mtm"]) >= abs(MAX_LOSS):
         pos["breakeven_armed"] = True
 
-    # Rupee stop only -- the premium-percentage stop was removed.
     if mtm <= -abs(MAX_LOSS):
         close_position_for(strat, ltp, mtm, "STOPLOSS"); return
 
-    # Breakeven stop: lock a small positive cushion (was: mtm <= 0).
     if pos["breakeven_armed"] and mtm <= abs(MAX_LOSS) * 0.10:
         close_position_for(strat, ltp, mtm, "BREAKEVEN_STOP"); return
 
@@ -676,16 +644,10 @@ def manage_position_for(strat, spot, hm):
         if mtm <= floor:
             close_position_for(strat, ltp, mtm, "PROFIT_TRAIL"); return
 
-    if strat["key"] == "regime_switcher" and strat["active_strategy"] == "or_fade":
-        now_epoch = _sim_now_epoch()
-        if now_epoch - _sf(pos["entry_ts"]) >= RS_FADE_HOLD_TIMEOUT_SEC:
-            close_position_for(strat, ltp, mtm, "HOLD_TIMEOUT"); return
-
     if is_at_or_after(hm, HARD_EXIT):
         close_position_for(strat, ltp, mtm, "TIME_EXIT"); return
 
 
-# ---------- AI ANALYST ----------
 AI_SYSTEM_PROMPT = """You are a market analyst for NIFTY intraday options trading.
 
 STEP 1 -- classify: TRENDING_UP / TRENDING_DOWN / RANGING / CHOPPY / REVERSAL
@@ -698,6 +660,15 @@ CONFIDENCE CALIBRATION: 80-100 multiple signals; 60-79 most align;
 YOUR RECENT DECISIONS are listed. If you said the same thing repeatedly and
 the market moved your way, your read is working. If you flip-flopped, the
 setup is unstable.
+
+CRITICAL: A recent WIN does NOT validate re-entering the same direction
+immediately. Trend exits fire BECAUSE the move has reversed. If your last
+trade exited via PROFIT_TRAIL, the immediate thesis is exhausted. Require
+fresh evidence (a new structural break, a higher-confidence setup) before
+re-committing to the same side.
+
+If spot is near the top or bottom of today's range, that is a reason for
+CAUTION on the side pushing further in that direction, not confirmation.
 
 OI WALLS ARE NOT HARD FLOORS. If price already broke a similar level once
 today, the next one is weaker.
@@ -739,7 +710,20 @@ def ai_ask_claude(strat, spot, daily_closes):
         trend = (f"\nLast {len(daily_closes)} daily closes: "
                  + ", ".join(f"{v:.0f}" for v in daily_closes)
                  + f"\nNet multi-day: {net:+.0f}")
-    user_msg = (f"Current spot: {spot:.1f}{trend}\n\n"
+
+    rs = strat.get("recent_spots") or []
+    intraday = ""
+    if len(rs) >= 5:
+        hi, lo = max(rs), min(rs)
+        if hi > lo:
+            pos_in_range = (spot - lo) / (hi - lo) * 100.0
+            intraday = (f"\nToday's intraday range: {lo:.1f} – {hi:.1f} "
+                        f"(current spot is at {pos_in_range:.0f}% of today's range, "
+                        f"where 0%=day low and 100%=day high)")
+        else:
+            intraday = f"\nToday's intraday range: flat (spot {spot:.1f})"
+
+    user_msg = (f"Current spot: {spot:.1f}{trend}{intraday}\n\n"
                 f"=== YOUR RECENT DECISIONS ===\n{ai_format_memory(strat, spot)}")
     try:
         r = requests.post("https://api.anthropic.com/v1/messages",
@@ -774,6 +758,10 @@ def tick_ai_analyst(strat, spot, hm):
     if now - _sf(strat["last_ai_call_at"]) < AI_INTERVAL_SEC:
         return
     strat["last_ai_call_at"] = now
+
+    prev_call = strat.get("last_call") or {}
+    prev_direction = prev_call.get("direction")
+
     today = _now_ist().date().isoformat()
     if strat["daily_fetched_day"] != today:
         strat["daily_closes"] = fetch_daily_closes(AI_DAILY_LOOKBACK)
@@ -805,146 +793,27 @@ def tick_ai_analyst(strat, spot, hm):
     if confidence < AI_MIN_CONFIDENCE:
         log("INFO", f"[{strat['name']}] confidence {confidence} below {AI_MIN_CONFIDENCE}")
         return
+
+    # Same-direction re-entry within 2*WIN_COOLDOWN of a win requires
+    # RE_ENTRY_MIN_CONFIDENCE instead of just AI_MIN_CONFIDENCE.
+    last_win = strat.get("last_win_at")
+    if last_win and prev_direction == direction:
+        elapsed = _sim_now_epoch() - _sf(last_win)
+        if elapsed < 2 * WIN_COOLDOWN_SEC and confidence < RE_ENTRY_MIN_CONFIDENCE:
+            log("INFO", f"[{strat['name']}] skip same-dir re-entry — "
+                        f"{confidence:.0f}% < {RE_ENTRY_MIN_CONFIDENCE}% required "
+                        f"within {2*WIN_COOLDOWN_SEC//60}min of last win")
+            return
+
     side = "CE" if direction == "bullish" else "PE"
     open_position_for(strat, side, spot, reason=f"{direction} {confidence:.0f}%",
                       confidence=confidence, direction=direction,
                       reasoning=decision.get("reasoning", ""))
 
 
-# ---------- REGIME SWITCHER ----------
-def _wilder_atr(candles, period=14):
-    if len(candles) < period + 1:
-        return []
-    trs = []
-    for i in range(1, len(candles)):
-        h, l = _sf(candles[i][2]), _sf(candles[i][3])
-        pc = _sf(candles[i-1][4])
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    atr_vals = [sum(trs[:period]) / period]
-    for i in range(period, len(trs)):
-        atr_vals.append((atr_vals[-1] * (period - 1) + trs[i]) / period)
-    return atr_vals
+TICKERS = {"ai_analyst": tick_ai_analyst}
 
 
-def classify_regime(strat):
-    candles = fetch_daily_candles(days_back=45)
-    details = {"atr_ratio": None, "reason": ""}
-    if len(candles) < RS_LOOKBACK + 2:
-        details["reason"] = f"only {len(candles)} candles; default TRENDING"
-        return "TRENDING", details
-    atr_vals = _wilder_atr(candles, period=RS_ATR_PERIOD)
-    if len(atr_vals) < RS_LOOKBACK:
-        details["reason"] = "not enough ATR; default TRENDING"
-        return "TRENDING", details
-    baseline = sum(atr_vals[-RS_LOOKBACK:]) / RS_LOOKBACK
-    recent = sum(atr_vals[-RS_RECENT:]) / RS_RECENT
-    ratio = recent / baseline if baseline > 0 else 1.0
-    details["atr_ratio"] = round(ratio, 3)
-    details["atr_baseline"] = round(baseline, 2)
-    details["atr_recent"] = round(recent, 2)
-    if ratio >= RS_TREND_RATIO:
-        details["reason"] = f"ATR ratio {ratio:.2f} >= {RS_TREND_RATIO}"
-        return "TRENDING", details
-    if ratio <= RS_RANGE_RATIO:
-        details["reason"] = f"ATR ratio {ratio:.2f} <= {RS_RANGE_RATIO}"
-        return "RANGING", details
-    details["reason"] = f"ATR ratio {ratio:.2f} inconclusive; default TRENDING"
-    return "TRENDING", details
-
-
-def rs_update_range(strat, spot):
-    if strat["range_high"] is None:
-        strat["range_high"] = strat["range_low"] = spot
-    else:
-        strat["range_high"] = max(strat["range_high"], spot)
-        strat["range_low"] = min(strat["range_low"], spot)
-
-
-def rs_lock_range(strat):
-    if not strat["range_locked"] and strat["range_high"] is not None:
-        strat["range_locked"] = True
-        log("INFO", f"[{strat['name']}] range locked "
-                    f"{strat['range_low']:.1f}-{strat['range_high']:.1f} "
-                    f"(regime {strat['regime']}, sub {strat['active_strategy']})")
-
-
-def rs_scalp_orb_tick(strat, spot, hm):
-    if int(strat["trades_today"] or 0) >= RS_ORB_MAX_TRADES:
-        return
-    if is_at_or_after(hm, HARD_EXIT):
-        return
-    rh, rl = strat["range_high"], strat["range_low"]
-    if rh is None or rl is None:
-        return
-    if spot > rh + RS_ORB_BREAK_BUFFER:
-        open_position_for(strat, "CE", spot, reason=f"broke H {rh:.1f}")
-    elif spot < rl - RS_ORB_BREAK_BUFFER:
-        open_position_for(strat, "PE", spot, reason=f"broke L {rl:.1f}")
-
-
-def rs_or_fade_tick(strat, spot, hm):
-    if int(strat["trades_today"] or 0) >= RS_FADE_MAX_TRADES:
-        return
-    if is_at_or_after(hm, HARD_EXIT):
-        return
-    if strat["fade_last_exit_at"] is not None:
-        if _sim_now_epoch() - _sf(strat["fade_last_exit_at"]) < RS_FADE_COOLDOWN_SEC:
-            return
-    rh, rl = strat["range_high"], strat["range_low"]
-    if rh is None or rl is None:
-        return
-    if spot > rh + RS_FADE_BREAK_BUFFER:
-        if strat["fade_broken_side"] != "UP":
-            strat["fade_broken_side"] = "UP"
-            log("INFO", f"[{strat['name']}] broke UP {spot:.1f} — watching")
-        return
-    if spot < rl - RS_FADE_BREAK_BUFFER:
-        if strat["fade_broken_side"] != "DOWN":
-            strat["fade_broken_side"] = "DOWN"
-            log("INFO", f"[{strat['name']}] broke DOWN {spot:.1f} — watching")
-        return
-    if strat["fade_broken_side"] is None:
-        return
-    if strat["fade_broken_side"] == "UP":
-        if spot <= rh - RS_FADE_RETURN_BUFFER:
-            open_position_for(strat, "PE", spot, reason="failed UP break")
-            strat["fade_broken_side"] = None
-    elif strat["fade_broken_side"] == "DOWN":
-        if spot >= rl + RS_FADE_RETURN_BUFFER:
-            open_position_for(strat, "CE", spot, reason="failed DOWN break")
-            strat["fade_broken_side"] = None
-
-
-def tick_regime_switcher(strat, spot, hm):
-    rs_list = strat["recent_spots"]
-    rs_list.append(spot)
-    if len(rs_list) > 40:
-        del rs_list[:-40]
-
-    today = _now_ist().date().isoformat()
-    if strat["regime_decided_day"] != today:
-        regime, details = classify_regime(strat)
-        strat["regime"] = regime
-        strat["regime_details"] = details
-        strat["regime_decided_day"] = today
-        strat["active_strategy"] = "scalp_orb" if regime == "TRENDING" else "or_fade"
-        log("INFO", f"[{strat['name']}] regime: {regime} — {details.get('reason','')}. "
-                    f"Sub: {strat['active_strategy']}")
-    if is_before(hm, RANGE_END):
-        rs_update_range(strat, spot)
-        return
-    if not strat["range_locked"]:
-        rs_lock_range(strat)
-    if strat["active_strategy"] == "scalp_orb":
-        rs_scalp_orb_tick(strat, spot, hm)
-    elif strat["active_strategy"] == "or_fade":
-        rs_or_fade_tick(strat, spot, hm)
-
-
-TICKERS = {"ai_analyst": tick_ai_analyst, "regime_switcher": tick_regime_switcher}
-
-
-# ---------- ENGINE LOOP ----------
 def engine_loop():
     last_state = None
     while True:
@@ -984,7 +853,6 @@ def engine_loop():
             time.sleep(5)
 
 
-# ---------- BACKTEST ----------
 BACKTEST = {"status": "idle", "progress": 0, "message": "",
             "result": None, "error": None, "started_at": None,
             "current_trades": [], "log_lines": []}
@@ -996,173 +864,15 @@ def _bt_log(msg):
         BACKTEST["log_lines"] = BACKTEST["log_lines"][-500:]
 
 
-def _series(dict_ts_price):
-    pairs = sorted(dict_ts_price.items())
-    return {"ts": [p[0] for p in pairs], "price": [p[1] for p in pairs]}
-
-
-def _series_at(series, ts):
-    import bisect
-    if not series or not series["ts"]:
-        return None
-    i = bisect.bisect_right(series["ts"], ts) - 1
-    if i < 0:
-        return None
-    return series["price"][i]
-
-
 def run_backtest_thread(months):
     try:
         BACKTEST.update({"status": "running", "progress": 0,
-                         "message": "Fetching history...", "error": None,
+                         "message": "Starting...", "error": None,
                          "result": None, "started_at": time.time(),
                          "current_trades": [], "log_lines": []})
-
-        fyers = get_fyers_client()
-        if fyers is None:
-            raise RuntimeError("Fyers not connected — backtest needs historical data")
-
-        end = dt.date.today()
-        start = end - dt.timedelta(days=int(months) * 30)
-        _bt_log(f"Fetching {start} → {end}")
-
-        def fetch_chunked(symbol, resolution, from_date, to_date):
-            all_c = []
-            chunk_end = to_date
-            while chunk_end >= from_date:
-                chunk_start = max(from_date, chunk_end - dt.timedelta(days=85))
-                try:
-                    r = fyers.history(data={
-                        "symbol": symbol, "resolution": resolution,
-                        "date_format": "1",
-                        "range_from": chunk_start.strftime("%Y-%m-%d"),
-                        "range_to": chunk_end.strftime("%Y-%m-%d"),
-                        "cont_flag": "1"})
-                    if isinstance(r, dict) and r.get("s") == "ok":
-                        all_c.extend(r.get("candles") or [])
-                except Exception as e:
-                    _bt_log(f"chunk {chunk_start} failed: {e}")
-                chunk_end = chunk_start - dt.timedelta(days=1)
-                time.sleep(0.2)
-            dedup = {c[0]: c for c in all_c if c and len(c) >= 5 and c[0] is not None}
-            return sorted(dedup.values(), key=lambda c: c[0])
-
-        spot_candles = fetch_chunked(SPOT_SYMBOL, "5", start, end)
-        _bt_log(f"spot candles: {len(spot_candles)}")
-        if len(spot_candles) < 100:
-            raise RuntimeError(f"only {len(spot_candles)} spot candles")
-
-        vix_candles = fetch_chunked(VIX_SYMBOL, "5", start, end)
-        _bt_log(f"vix candles: {len(vix_candles)}")
-
-        daily_candles = fetch_chunked(SPOT_SYMBOL, "D", start - dt.timedelta(days=60), end)
-        _bt_log(f"daily candles: {len(daily_candles)}")
-
-        spot_series = _series({int(c[0]): _sf(c[4]) for c in spot_candles if c[4] is not None})
-        vix_series = _series({int(c[0]): _sf(c[4]) for c in vix_candles if c[4] is not None}) if vix_candles else None
-
-        strat = STRATEGIES["regime_switcher"]
-        reset_strategy_session(strat)
-        strat["enabled"] = True
-        strat["session_day"] = None
-
-        _SIM["active"] = True
-        _SIM["all_daily_candles"] = daily_candles
-
-        all_ts = spot_series["ts"]
-        total = len(all_ts)
-        if total == 0:
-            raise RuntimeError("no spot timestamps")
-
-        last_day = None
-        for i, ts in enumerate(all_ts):
-            if i % 500 == 0:
-                BACKTEST["progress"] = int(100 * i / total)
-                BACKTEST["message"] = f"Replaying {i}/{total}"
-
-            spot = spot_series["price"][i]
-            vix_raw = _series_at(vix_series, ts) if vix_series else None
-            vix = _sf(vix_raw, DEFAULT_VIX)
-
-            sim_now = dt.datetime.fromtimestamp(ts, tz=IST).replace(tzinfo=None)
-            cur_day = sim_now.date()
-
-            if last_day is not None and cur_day != last_day:
-                if strat["position"]:
-                    ltp = fetch_option_premium(strat["position"]["symbol"])
-                    if ltp is not None:
-                        pnl = (ltp - strat["position"]["entry_premium"]) * strat["position"]["qty"] * LOT_SIZE
-                        close_position_for(strat, ltp, pnl, "MARKET_CLOSED")
-                reset_strategy_session(strat)
-                strat["session_day"] = cur_day.isoformat()
-            last_day = cur_day
-
-            _SIM["now"] = sim_now
-            _SIM["current_spot"] = spot
-            _SIM["current_vix"] = vix
-            hm = (sim_now.hour, sim_now.minute)
-
-            today_key = cur_day.isoformat()
-            if strat["session_day"] != today_key:
-                reset_strategy_session(strat)
-                strat["session_day"] = today_key
-
-            if strat["position"]:
-                manage_position_for(strat, spot, hm)
-            else:
-                tick_regime_switcher(strat, spot, hm)
-
-        if strat["position"]:
-            ltp = fetch_option_premium(strat["position"]["symbol"])
-            if ltp is not None:
-                pnl = (ltp - strat["position"]["entry_premium"]) * strat["position"]["qty"] * LOT_SIZE
-                close_position_for(strat, ltp, pnl, "END_OF_BACKTEST")
-
-        _SIM["active"] = False
-        _SIM["now"] = None
-
-        trades = [t for t in BACKTEST["current_trades"] if t["pnl"] is not None]
-        wins = [t for t in trades if t["pnl"] > 0]
-        losses = [t for t in trades if t["pnl"] <= 0]
-        total_pnl = sum(t["pnl"] for t in trades)
-
-        by_day = {}
-        for t in trades:
-            d = dt.datetime.fromtimestamp(t["ts_entry"], tz=IST).date().isoformat()
-            by_day.setdefault(d, []).append(t["pnl"])
-        daily = []
-        cum = 0.0
-        for d in sorted(by_day):
-            day_pnl = sum(by_day[d])
-            cum += day_pnl
-            daily.append({"date": d, "trades": len(by_day[d]),
-                          "pnl": round(day_pnl, 2), "cum_pnl": round(cum, 2)})
-
-        result = {
-            "months": months,
-            "days_tested": len(set(dt.datetime.fromtimestamp(t["ts_entry"], tz=IST).date().isoformat() for t in BACKTEST["current_trades"])),
-            "total_trades": len(trades),
-            "wins": len(wins),
-            "losses": len(losses),
-            "win_rate_pct": round(100 * len(wins) / len(trades), 1) if trades else 0.0,
-            "total_pnl": round(total_pnl, 2),
-            "avg_pnl_per_trade": round(total_pnl / len(trades), 2) if trades else 0.0,
-            "avg_win": round(sum(t["pnl"] for t in wins) / len(wins), 2) if wins else 0.0,
-            "avg_loss": round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else 0.0,
-            "cost_per_trade": COST_PER_TRADE,
-            "exit_reason_breakdown": _bucket_exit_reasons(trades),
-            "daily_breakdown": daily,
-            "trade_log": [{"entry_ts": t["ts_entry"], "exit_ts": t["ts_exit"],
-                           "symbol": t["symbol"], "side": t["side"],
-                           "entry_price": t["entry_price"], "exit_price": t["exit_price"],
-                           "pnl": round(t["pnl"], 2), "exit_reason": t["exit_reason"],
-                           "spot": t["spot"], "reason": t["reason"]} for t in trades],
-            "log": BACKTEST["log_lines"][-100:],
-        }
-        BACKTEST["result"] = result
-        BACKTEST["status"] = "complete"
-        BACKTEST["progress"] = 100
-        BACKTEST["message"] = f"Done. {len(trades)} trades over {result['days_tested']} days."
+        raise RuntimeError(
+            "No backtestable strategy is configured. The AI Analyst strategy "
+            "requires live Claude API calls and cannot be backtested.")
     except Exception as e:
         _SIM["active"] = False
         _SIM["now"] = None
@@ -1188,7 +898,6 @@ def _bucket_exit_reasons(trades):
     return buckets
 
 
-# ---------- SCORECARD ----------
 def build_scorecard_csv(strategy=None):
     q = "SELECT * FROM trades WHERE ts_exit IS NOT NULL"
     args = ()
@@ -1248,7 +957,6 @@ def backtest_to_csv(result):
     return buf.getvalue()
 
 
-# ---------- APP ----------
 @asynccontextmanager
 async def lifespan(app):
     init_db()
@@ -1280,13 +988,9 @@ def _snapshot_strategy(strat):
     if strat["key"] == "ai_analyst":
         base["last_call"] = strat.get("last_call")
         base["memory_count"] = len(strat.get("memory", []))
-    elif strat["key"] == "regime_switcher":
-        base["regime"] = strat.get("regime")
-        base["regime_details"] = strat.get("regime_details")
-        base["active_strategy"] = strat.get("active_strategy")
-        base["range_high"] = strat.get("range_high")
-        base["range_low"] = strat.get("range_low")
-        base["range_locked"] = strat.get("range_locked")
+        base["win_cooldown_remaining_sec"] = (
+            max(0, int(WIN_COOLDOWN_SEC - (_sim_now_epoch() - _sf(strat["last_win_at"]))))
+            if strat.get("last_win_at") else 0)
     return base
 
 
@@ -1379,6 +1083,13 @@ def fyers_url():
     url, err = fyers_login_url()
     if err: return {"error": err}
     return {"url": url}
+
+
+@app.post("/api/fyers/disconnect")
+def fyers_disconnect():
+    clear_fyers_client()
+    log("INFO", "Fyers token cleared — re-authentication required")
+    return {"ok": True}
 
 
 @app.get("/callback", response_class=HTMLResponse)
@@ -1505,7 +1216,6 @@ button.danger{{border-color:rgba(255,85,115,0.35);color:var(--red)}}
 button.fyers{{background:linear-gradient(135deg,rgba(160,140,255,0.15),rgba(62,224,255,0.15));
 border-color:rgba(160,140,255,0.4);color:var(--violet);}}
 button.score{{border-color:rgba(34,232,166,0.4);color:var(--green)}}
-button.bt{{border-color:rgba(160,140,255,0.4);color:var(--violet)}}
 main{{padding:32px;max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:26px;}}
 section{{display:flex;flex-direction:column;gap:14px}}
 h2{{font-family:var(--disp);font-size:12px;font-weight:700;text-transform:uppercase;
@@ -1543,10 +1253,9 @@ text-transform:uppercase;border:1px solid transparent;}}
 padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12.5px;line-height:1.6;}}
 .ai-call b{{color:var(--cyan);font-family:var(--mono);}}
 .ai-reason{{color:var(--dim);font-size:12px;margin-top:4px;}}
-.regime-banner{{background:rgba(245,181,68,0.08);border-left:2px solid var(--amber);
-padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12.5px;line-height:1.6;}}
-.regime-banner .tag{{color:var(--amber);font-family:var(--disp);font-weight:700;
-text-transform:uppercase;letter-spacing:0.06em;}}
+.cooldown-banner{{background:rgba(245,181,68,0.08);border-left:2px solid var(--amber);
+padding:8px 12px;border-radius:6px;margin-top:12px;font-size:12px;color:var(--amber);
+font-family:var(--mono);}}
 .table-wrap{{overflow-x:auto;border-radius:var(--r);border:1px solid var(--line);
 background:rgba(20,28,45,0.4);-webkit-overflow-scrolling:touch;}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}
@@ -1559,7 +1268,6 @@ tbody tr:last-child td{{border-bottom:none}}
 tbody tr:hover{{background:rgba(62,224,255,0.03)}}
 .tag{{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10.5px;font-weight:600;}}
 .tag.ai{{background:rgba(62,224,255,0.1);color:var(--cyan);}}
-.tag.rs{{background:rgba(245,181,68,0.12);color:var(--amber);}}
 .log-terminal{{background:rgba(4,7,13,0.6);border:1px solid var(--line);
 border-radius:var(--r);padding:16px;max-height:400px;overflow-y:auto;
 font-family:var(--mono);font-size:12px;display:flex;flex-direction:column-reverse;gap:4px;}}
@@ -1570,12 +1278,6 @@ font-family:var(--mono);font-size:12px;display:flex;flex-direction:column-revers
 .log-line.WARN .log-msg{{color:var(--amber)}}
 .log-line.ERROR .log-msg{{color:var(--red)}}
 .empty{{color:var(--dim2);font-size:13px;padding:16px;text-align:center;font-style:italic;}}
-.bt-stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;}}
-.bt-stat{{background:rgba(20,28,45,0.6);border:1px solid var(--line);border-radius:8px;padding:14px;}}
-.bt-stat-label{{font-size:9.5px;color:var(--dim2);text-transform:uppercase;letter-spacing:0.14em;font-weight:600;margin-bottom:4px;}}
-.bt-stat-val{{font-family:var(--mono);font-size:20px;font-weight:500;}}
-.progress-bar{{height:4px;background:rgba(120,145,190,0.12);border-radius:99px;overflow:hidden;margin-top:10px;}}
-.progress-fill{{height:100%;background:linear-gradient(90deg,#0891B2,#34D399);transition:width 0.4s ease;}}
 ::-webkit-scrollbar{{width:8px;height:8px}}
 ::-webkit-scrollbar-thumb{{background:rgba(120,145,190,0.15);border-radius:6px}}
 @media(max-width:720px){{
@@ -1618,8 +1320,7 @@ h2{{font-size:10.5px}}
   </div>
   <div class="header-actions">
     <button id="toggle" class="primary" onclick="toggleEngine()">Start engine</button>
-    <button class="fyers" id="fy-btn" onclick="connectFyers()" style="display:none">Fyers</button>
-    <button class="bt" onclick="openBacktest()">Backtest</button>
+    <button class="fyers" id="fy-btn" onclick="connectFyers()" style="display:none">Connect Fyers</button>
     <a href="/api/scorecard" download style="text-decoration:none"><button class="score">Scorecard</button></a>
     <button class="danger" onclick="clearTrades()">Clear</button>
   </div>
@@ -1649,60 +1350,6 @@ h2{{font-size:10.5px}}
   </section>
 </main>
 
-<div id="bt-modal" style="display:none;position:fixed;inset:0;background:rgba(2,4,8,0.85);
-z-index:200;overflow-y:auto;padding:30px 16px;backdrop-filter:blur(3px)">
-  <div style="max-width:900px;margin:0 auto;background:var(--bg);border:1px solid var(--line);
-       border-radius:var(--r);padding:26px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-      <h2 style="margin:0">Backtest — Regime Switcher</h2>
-      <button onclick="closeBacktest()" style="border-radius:50%;width:32px;height:32px;padding:0;justify-content:center">×</button>
-    </div>
-    <p style="color:var(--dim);font-size:13px;line-height:1.6;margin-bottom:16px">
-      Replays historical 5-min NIFTY candles through the real Regime Switcher.
-      Option premiums are estimated with Black-Scholes using India VIX as the IV input.
-      A realistic round-trip cost of <b id="bt-cost-label">₹230</b> per trade is
-      deducted from every exit. Entries whose target would need the option to
-      more than double in premium are refused.
-    </p>
-    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--dim)">
-        Months of history
-        <input id="bt-months" type="number" value="3" min="1" max="12"
-          style="background:var(--bg);border:1px solid var(--line);color:var(--txt);
-                 padding:9px 11px;border-radius:6px;font-family:var(--mono);width:100px">
-      </label>
-      <button class="primary" onclick="runBacktest()" id="bt-run-btn">Run backtest</button>
-      <a href="/api/backtest/export" download id="bt-export" style="display:none;text-decoration:none">
-        <button class="score">Download CSV</button>
-      </a>
-    </div>
-    <div id="bt-progress" style="display:none;margin-bottom:16px">
-      <div style="font-size:12px;color:var(--dim);font-family:var(--mono)" id="bt-progress-msg"></div>
-      <div class="progress-bar"><div class="progress-fill" id="bt-progress-fill" style="width:0%"></div></div>
-    </div>
-    <div id="bt-results" style="display:none">
-      <div class="bt-stats" style="margin-bottom:16px">
-        <div class="bt-stat"><div class="bt-stat-label">Trades</div><div class="bt-stat-val" id="bt-total-trades">—</div></div>
-        <div class="bt-stat"><div class="bt-stat-label">Win rate</div><div class="bt-stat-val" id="bt-winrate">—</div></div>
-        <div class="bt-stat"><div class="bt-stat-label">Net P&L</div><div class="bt-stat-val" id="bt-pnl">—</div></div>
-        <div class="bt-stat"><div class="bt-stat-label">Avg/trade</div><div class="bt-stat-val" id="bt-avg">—</div></div>
-        <div class="bt-stat"><div class="bt-stat-label">Avg win</div><div class="bt-stat-val" id="bt-avgwin">—</div></div>
-        <div class="bt-stat"><div class="bt-stat-label">Avg loss</div><div class="bt-stat-val" id="bt-avgloss">—</div></div>
-      </div>
-      <h2 style="margin:16px 0 8px">Exit reasons</h2>
-      <div id="bt-exits" style="font-size:13px;color:var(--dim);line-height:1.9;font-family:var(--mono)"></div>
-      <h2 style="margin:16px 0 8px">Daily P&L</h2>
-      <div style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px">
-        <table><thead><tr><th>Date</th><th>Trades</th><th>Day P&L</th><th>Cumulative</th></tr></thead>
-        <tbody id="bt-daily"></tbody></table>
-      </div>
-    </div>
-    <div id="bt-error" style="display:none;color:var(--red);font-family:var(--mono);
-         font-size:12px;margin-top:14px;padding:12px;background:rgba(255,85,115,0.08);
-         border-radius:8px;border:1px solid rgba(255,85,115,0.3)"></div>
-  </div>
-</div>
-
 <script>
 const $ = s => document.querySelector(s);
 async function j(u, o){{const r = await fetch(u, o); return r.json();}}
@@ -1731,8 +1378,14 @@ async function refresh(){{
     const btn = $("#toggle");
     btn.textContent = s.engine_running ? "Stop engine" : "Start engine";
     btn.className = s.engine_running ? "danger" : "primary";
-    $("#fy-btn").style.display = (s.fyers_configured && !s.fyers_ready) ? "inline-flex" : "none";
-    if(s.cost_per_trade != null) $("#bt-cost-label").textContent = "₹" + s.cost_per_trade;
+
+    const fyBtn = $("#fy-btn");
+    if(s.fyers_configured){{
+      fyBtn.style.display = "inline-flex";
+      fyBtn.textContent = s.fyers_ready ? "Reconnect Fyers" : "Connect Fyers";
+    }} else {{
+      fyBtn.style.display = "none";
+    }}
 
     $("#strat-grid").innerHTML = s.strategies.map(str => {{
       const onClass = str.enabled ? "enabled" : "";
@@ -1743,10 +1396,10 @@ async function refresh(){{
       let extra = "";
       if(str.key === "ai_analyst" && str.last_call){{
         extra = `<div class="ai-call"><b>${{str.last_call.direction}}</b> at ${{fmt(str.last_call.confidence,0)}}% confidence<div class="ai-reason">${{str.last_call.reasoning || ''}}</div></div>`;
-      }} else if(str.key === "regime_switcher" && str.regime){{
-        const sub = str.active_strategy === "scalp_orb" ? "Scalp ORB" : "OR Fade";
-        const atr = str.regime_details && str.regime_details.atr_ratio;
-        extra = `<div class="regime-banner"><span class="tag">${{str.regime}}</span> → <b>${{sub}}</b><div class="ai-reason">${{(str.regime_details && str.regime_details.reason) || ''}}</div><div class="ai-reason">ATR ratio: ${{atr != null ? atr.toFixed(2) : '—'}}</div></div>`;
+      }}
+      if(str.win_cooldown_remaining_sec && str.win_cooldown_remaining_sec > 0){{
+        const mins = Math.ceil(str.win_cooldown_remaining_sec / 60);
+        extra += `<div class="cooldown-banner">Post-win cooldown active · ${{mins}}m remaining</div>`;
       }}
       return `<div class="scard ${{onClass}}">
         <div class="scard-head"><span class="scard-name">${{str.name}}</span>${{statusPill}}</div>
@@ -1773,7 +1426,7 @@ async function refresh(){{
     else {{
       $("#trades-empty").style.display = "none";
       $("#trades-table").innerHTML = t.map(x => {{
-        const tag = x.strategy === "ai_analyst" ? '<span class="tag ai">AI</span>' : '<span class="tag rs">RS</span>';
+        const tag = '<span class="tag ai">AI</span>';
         const pv = x.pnl; const pc = pv > 0 ? 'pos' : pv < 0 ? 'neg' : '';
         const pt = pv == null ? '<span style="color:var(--dim2)">open</span>' : ((pv>=0?'+':'') + fmt(pv, 0));
         return `<tr><td>${{new Date(x.ts_entry*1000).toLocaleTimeString()}}</td><td>${{tag}}</td>
@@ -1793,87 +1446,13 @@ async function refresh(){{
   }}catch(e){{}}
 }}
 
-function openBacktest(){{ $("#bt-modal").style.display = "block"; }}
-function closeBacktest(){{ $("#bt-modal").style.display = "none"; }}
-
-let btPolling = null;
-
-async function runBacktest(){{
-  const months = parseInt($("#bt-months").value) || 3;
-  $("#bt-run-btn").disabled = true;
-  $("#bt-run-btn").textContent = "Running...";
-  $("#bt-results").style.display = "none";
-  $("#bt-error").style.display = "none";
-  $("#bt-progress").style.display = "block";
-  $("#bt-export").style.display = "none";
-  $("#bt-progress-msg").textContent = "Starting...";
-  $("#bt-progress-fill").style.width = "0%";
-
-  const r = await j("/api/backtest/run?months=" + months, {{method:"POST"}});
-  if(r.error){{
-    $("#bt-error").textContent = r.error;
-    $("#bt-error").style.display = "block";
-    $("#bt-run-btn").disabled = false;
-    $("#bt-run-btn").textContent = "Run backtest";
-    return;
-  }}
-
-  if(btPolling) clearInterval(btPolling);
-  btPolling = setInterval(pollBacktest, 1500);
-}}
-
-async function pollBacktest(){{
-  const s = await j("/api/backtest/status");
-  $("#bt-progress-msg").textContent = s.message || "...";
-  $("#bt-progress-fill").style.width = (s.progress || 0) + "%";
-  if(s.status === "complete"){{
-    clearInterval(btPolling); btPolling = null;
-    $("#bt-run-btn").disabled = false;
-    $("#bt-run-btn").textContent = "Run again";
-    $("#bt-progress").style.display = "none";
-    const r = await j("/api/backtest/result");
-    showBacktestResult(r);
-  }} else if(s.status === "failed"){{
-    clearInterval(btPolling); btPolling = null;
-    $("#bt-run-btn").disabled = false;
-    $("#bt-run-btn").textContent = "Run backtest";
-    $("#bt-progress").style.display = "none";
-    $("#bt-error").textContent = s.error || "unknown error";
-    $("#bt-error").style.display = "block";
-  }}
-}}
-
-function showBacktestResult(r){{
-  $("#bt-total-trades").textContent = r.total_trades;
-  $("#bt-winrate").textContent = r.win_rate_pct + "%";
-  $("#bt-pnl").textContent = fmt(r.total_pnl, 0);
-  $("#bt-pnl").className = "bt-stat-val " + (r.total_pnl > 0 ? "pos" : r.total_pnl < 0 ? "neg" : "");
-  $("#bt-avg").textContent = fmt(r.avg_pnl_per_trade, 0);
-  $("#bt-avgwin").textContent = fmt(r.avg_win, 0);
-  $("#bt-avgloss").textContent = fmt(r.avg_loss, 0);
-  const exits = $("#bt-exits"); exits.innerHTML = "";
-  const entries = Object.entries(r.exit_reason_breakdown || {{}}).sort((a,b) => b[1].count - a[1].count);
-  if(!entries.length) exits.innerHTML = '<span style="color:var(--dim2)">No trades closed.</span>';
-  for(const [reason, d] of entries){{
-    exits.insertAdjacentHTML("beforeend",
-      `<div>${{reason}}: <b>${{d.count}}</b> trades · net <b class="${{d.net_pnl > 0 ? 'pos' : d.net_pnl < 0 ? 'neg' : ''}}">${{fmt(d.net_pnl,0)}}</b> · avg <b>${{fmt(d.avg_pnl,0)}}</b> · win <b>${{d.win_rate_pct}}%</b></div>`);
-  }}
-  const daily = $("#bt-daily"); daily.innerHTML = "";
-  for(const d of r.daily_breakdown || []){{
-    daily.insertAdjacentHTML("beforeend",
-      `<tr><td>${{d.date}}</td><td>${{d.trades}}</td>
-      <td class="${{d.pnl > 0 ? 'pos' : d.pnl < 0 ? 'neg' : ''}}">${{fmt(d.pnl,0)}}</td>
-      <td>${{fmt(d.cum_pnl,0)}}</td></tr>`);
-  }}
-  $("#bt-results").style.display = "block";
-  $("#bt-export").style.display = "inline-block";
-}}
-
 async function connectFyers(){{
+  try{{ await j("/api/fyers/disconnect", {{method:"POST"}}); }}catch(e){{}}
   const r = await j("/api/fyers/login-url");
   if(r.error){{alert("Fyers error: " + r.error); return;}}
   window.open(r.url, "_blank");
 }}
+
 async function clearTrades(){{
   if(!confirm("Delete ALL trades?")) return;
   await j("/api/clear-trades", {{method:"POST"}});
