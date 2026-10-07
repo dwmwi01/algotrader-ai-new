@@ -42,17 +42,16 @@ TARGET = 3500.0
 TRAIL_ARM_PCT = 65.0
 TRAIL_GIVEBACK_PCT = 25.0
 
-# --- Anti-whipsaw ---
-DIRECTION_COOLDOWN_SEC = 1800     # after a STOPLOSS, no same-side re-entry for 30 min
-WIN_COOLDOWN_SEC = 900            # after a closed WINNER, no entries at all for 15 min
-RE_ENTRY_MIN_CONFIDENCE = 67      # same-direction re-entry within 2*WIN_COOLDOWN needs this
+DIRECTION_COOLDOWN_SEC = 1800
+WIN_COOLDOWN_SEC = 900
+RE_ENTRY_MIN_CONFIDENCE = 67
 
 COST_PER_TRADE = 230.0
 ACCOUNT_MAX_DAILY_LOSS = 20000.0
 ACCOUNT_MAX_TRADES = 8
 
 AI_MODEL = "claude-sonnet-5"
-AI_INTERVAL_SEC = 600             # 10 min checks
+AI_INTERVAL_SEC = 600
 AI_MIN_CONFIDENCE = 60
 AI_MEMORY_SIZE = 6
 AI_DAILY_LOOKBACK = 5
@@ -438,7 +437,8 @@ def _new_strategy(key, name, description, **extra):
             "trades_today": 0, "session_day": None, "last_action": None,
             "last_stop_side": None, "last_stop_at": None,
             "last_win_at": None,
-            "recent_spots": []}
+            "recent_spots": [],
+            "day_high": None, "day_low": None}
     base.update(extra)
     return base
 
@@ -481,6 +481,8 @@ def reset_strategy_session(strat):
     strat["last_stop_at"] = None
     strat["last_win_at"] = None
     strat["recent_spots"] = []
+    strat["day_high"] = None
+    strat["day_low"] = None
     if strat["key"] == "ai_analyst":
         strat["memory"] = []
         strat["last_call"] = None
@@ -506,7 +508,6 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
     if strat["position"] is not None:
         return False
 
-    # --- Post-win cooldown: no entries within WIN_COOLDOWN_SEC of a win ---
     if strat.get("last_win_at"):
         elapsed = _sim_now_epoch() - _sf(strat["last_win_at"])
         if elapsed < WIN_COOLDOWN_SEC:
@@ -514,7 +515,6 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
                         f"(cooldown {WIN_COOLDOWN_SEC}s)")
             return False
 
-    # --- Anti-whipsaw: skip same-side re-entry right after a stop ---
     if strat.get("last_stop_side") == side and strat.get("last_stop_at"):
         elapsed = _sim_now_epoch() - _sf(strat["last_stop_at"])
         if elapsed < DIRECTION_COOLDOWN_SEC:
@@ -522,7 +522,6 @@ def open_position_for(strat, side, spot, reason="", confidence=None,
                         f"cooldown {int(elapsed)}s after SL")
             return False
 
-    # --- Intraday trend filter: don't fight the 20-period EMA ---
     rs = strat.get("recent_spots") or []
     if len(rs) >= 20:
         ema20 = sum(rs[-20:]) / 20.0
@@ -593,14 +592,12 @@ def close_position_for(strat, exit_premium, pnl, reason):
     strat["last_action"] = f"EXIT {pos['symbol']} @ ₹{exit_premium:.2f} pnl={pnl:+.0f} ({reason})"
     log("INFO", f"[{strat['name']}] {strat['last_action']}")
 
-    # Mark win time for post-win cooldown
     if reason == "STOPLOSS":
         strat["last_stop_side"] = pos["side"]
         strat["last_stop_at"] = exit_ts
     if reason in ("PROFIT_TRAIL", "TIME_EXIT") and pnl > 0:
         strat["last_win_at"] = exit_ts
 
-    # Memory format with [trend exhausted] marker
     if strat["key"] == "ai_analyst" and strat["memory"]:
         outcome = f"{'WIN' if pnl > 0 else 'LOSS'} {pnl:+.0f} via {reason}"
         if reason == "PROFIT_TRAIL":
@@ -667,8 +664,11 @@ trade exited via PROFIT_TRAIL, the immediate thesis is exhausted. Require
 fresh evidence (a new structural break, a higher-confidence setup) before
 re-committing to the same side.
 
-If spot is near the top or bottom of today's range, that is a reason for
-CAUTION on the side pushing further in that direction, not confirmation.
+The day's TRUE range is given to you explicitly. If spot is at 90-100% of
+today's range and the range itself is wide (say 100+ points), that is a
+TREND confirmation, not a caution signal -- the market has chosen a
+direction. Only treat range-edge proximity as a fade signal when the range
+is narrow (under ~50 points).
 
 OI WALLS ARE NOT HARD FLOORS. If price already broke a similar level once
 today, the next one is weaker.
@@ -711,17 +711,20 @@ def ai_ask_claude(strat, spot, daily_closes):
                  + ", ".join(f"{v:.0f}" for v in daily_closes)
                  + f"\nNet multi-day: {net:+.0f}")
 
-    rs = strat.get("recent_spots") or []
+    # Use the day's TRUE high/low, not the last 40 ticks of spot.
+    hi = strat.get("day_high")
+    lo = strat.get("day_low")
     intraday = ""
-    if len(rs) >= 5:
-        hi, lo = max(rs), min(rs)
-        if hi > lo:
-            pos_in_range = (spot - lo) / (hi - lo) * 100.0
-            intraday = (f"\nToday's intraday range: {lo:.1f} – {hi:.1f} "
-                        f"(current spot is at {pos_in_range:.0f}% of today's range, "
-                        f"where 0%=day low and 100%=day high)")
-        else:
-            intraday = f"\nToday's intraday range: flat (spot {spot:.1f})"
+    if hi is not None and lo is not None and hi > lo:
+        pos_in_range = (spot - lo) / (hi - lo) * 100.0
+        intraday = (f"\nToday's intraday range: {lo:.1f} – {hi:.1f} "
+                    f"({hi - lo:.1f} points wide). "
+                    f"Current spot {spot:.1f} is at {pos_in_range:.0f}% of today's range "
+                    f"(0%=day low, 100%=day high).")
+    elif hi is not None and lo is not None:
+        intraday = f"\nToday's intraday range: flat so far (spot {spot:.1f})"
+    else:
+        intraday = f"\nToday's intraday range: not yet established (spot {spot:.1f})"
 
     user_msg = (f"Current spot: {spot:.1f}{trend}{intraday}\n\n"
                 f"=== YOUR RECENT DECISIONS ===\n{ai_format_memory(strat, spot)}")
@@ -749,6 +752,13 @@ def tick_ai_analyst(strat, spot, hm):
     rs_list.append(spot)
     if len(rs_list) > 40:
         del rs_list[:-40]
+
+    # Track today's TRUE high/low. recent_spots is capped at 40 entries
+    # (120 seconds at 3-second ticks) and cannot be used for day-range.
+    if strat.get("day_high") is None or spot > strat["day_high"]:
+        strat["day_high"] = spot
+    if strat.get("day_low") is None or spot < strat["day_low"]:
+        strat["day_low"] = spot
 
     if int(strat["trades_today"] or 0) >= AI_MAX_TRADES:
         return
@@ -794,8 +804,6 @@ def tick_ai_analyst(strat, spot, hm):
         log("INFO", f"[{strat['name']}] confidence {confidence} below {AI_MIN_CONFIDENCE}")
         return
 
-    # Same-direction re-entry within 2*WIN_COOLDOWN of a win requires
-    # RE_ENTRY_MIN_CONFIDENCE instead of just AI_MIN_CONFIDENCE.
     last_win = strat.get("last_win_at")
     if last_win and prev_direction == direction:
         elapsed = _sim_now_epoch() - _sf(last_win)
@@ -984,7 +992,9 @@ def _snapshot_strategy(strat):
             "description": strat["description"], "enabled": strat["enabled"],
             "position": pos_view, "pnl": round(_sf(strat["pnl"]), 2),
             "trades_today": int(strat["trades_today"] or 0),
-            "last_action": strat["last_action"]}
+            "last_action": strat["last_action"],
+            "day_high": strat.get("day_high"),
+            "day_low": strat.get("day_low")}
     if strat["key"] == "ai_analyst":
         base["last_call"] = strat.get("last_call")
         base["memory_count"] = len(strat.get("memory", []))
@@ -1256,6 +1266,9 @@ padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12.5px;line-height
 .cooldown-banner{{background:rgba(245,181,68,0.08);border-left:2px solid var(--amber);
 padding:8px 12px;border-radius:6px;margin-top:12px;font-size:12px;color:var(--amber);
 font-family:var(--mono);}}
+.range-banner{{background:rgba(120,145,190,0.06);border-left:2px solid var(--dim);
+padding:6px 10px;border-radius:6px;margin-top:8px;font-size:11.5px;color:var(--dim);
+font-family:var(--mono);}}
 .table-wrap{{overflow-x:auto;border-radius:var(--r);border:1px solid var(--line);
 background:rgba(20,28,45,0.4);-webkit-overflow-scrolling:touch;}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}
@@ -1396,6 +1409,11 @@ async function refresh(){{
       let extra = "";
       if(str.key === "ai_analyst" && str.last_call){{
         extra = `<div class="ai-call"><b>${{str.last_call.direction}}</b> at ${{fmt(str.last_call.confidence,0)}}% confidence<div class="ai-reason">${{str.last_call.reasoning || ''}}</div></div>`;
+      }}
+      if(str.day_high != null && str.day_low != null && str.day_high > str.day_low){{
+        const width = str.day_high - str.day_low;
+        const pct = ((s.last_spot - str.day_low) / width * 100).toFixed(0);
+        extra += `<div class="range-banner">Day range: ${{fmt(str.day_low,1)}} – ${{fmt(str.day_high,1)}} (${{fmt(width,0)}}pts) · spot at ${{pct}}%</div>`;
       }}
       if(str.win_cooldown_remaining_sec && str.win_cooldown_remaining_sec > 0){{
         const mins = Math.ceil(str.win_cooldown_remaining_sec / 60);
