@@ -51,9 +51,9 @@ ACCOUNT_MAX_DAILY_LOSS = 20000.0
 ACCOUNT_MAX_TRADES = 8
 
 AI_MODEL = "claude-sonnet-5"
-AI_INTERVAL_SEC = 600
+AI_INTERVAL_SEC = 300             # 5 min — matches 5-min candle resolution
 AI_MIN_CONFIDENCE = 60
-AI_MEMORY_SIZE = 6
+AI_MEMORY_SIZE = 10               # preserves ~50 min of context at 5-min cadence
 AI_DAILY_LOOKBACK = 5
 AI_MAX_TRADES = 3
 
@@ -446,7 +446,7 @@ def _new_strategy(key, name, description, **extra):
 STRATEGIES = {
     "ai_analyst": _new_strategy(
         "ai_analyst", "AI Analyst",
-        "Claude reads price action + multi-day trend every 10 min and calls direction. Memory of last 6 calls. 15-min cooldown after any win; same-direction re-entry within 30 min needs 67% conviction. Needs ANTHROPIC_API_KEY.",
+        "Claude reads price action + multi-day trend every 5 min and calls direction. Memory of last 10 calls. 15-min cooldown after any win; same-direction re-entry within 30 min needs 67% conviction. Needs ANTHROPIC_API_KEY.",
         memory=[], last_call=None, last_ai_call_at=0.0,
         daily_closes=[], daily_fetched_day=None),
 }
