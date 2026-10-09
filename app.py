@@ -446,7 +446,7 @@ def _new_strategy(key, name, description, **extra):
 STRATEGIES = {
     "ai_analyst": _new_strategy(
         "ai_analyst", "AI Analyst",
-        "Claude reads price action + multi-day trend every 10 min and calls direction. Filters bullish calls in a down market. Memory of last 6 calls. 15-min cooldown after any win; same-direction re-entry within 30 min needs 67% conviction. Needs ANTHROPIC_API_KEY.",
+        "Claude reads price action + multi-day trend every 10 min and calls direction. Memory of last 6 calls. 15-min cooldown after any win; same-direction re-entry within 30 min needs 67% conviction. Needs ANTHROPIC_API_KEY.",
         memory=[], last_call=None, last_ai_call_at=0.0,
         daily_closes=[], daily_fetched_day=None),
 }
@@ -670,11 +670,17 @@ TREND confirmation, not a caution signal -- the market has chosen a
 direction. Only treat range-edge proximity as a fade signal when the range
 is narrow (under ~50 points).
 
+MULTI-DAY CONTEXT: The net multi-day move is given to you. It is context,
+NOT a hard rule. A counter-trend intraday break can be a genuine reversal
+if the intraday evidence is strong -- you should factor the multi-day trend
+into your CONFIDENCE number, but you are not forbidden from taking a
+counter-trend trade when conviction is high. Cap confidence appropriately
+(a 200-point counter-trend bounce inside a 400-point downtrend is a
+lower-confidence trade than the same bounce inside a flat market), but if
+the intraday setup is decisive and you judge it tradeable, say so.
+
 OI WALLS ARE NOT HARD FLOORS. If price already broke a similar level once
 today, the next one is weaker.
-
-MULTI-DAY CONTEXT. A counter-trend break is a bull/bear trap candidate
-unless you have specific evidence the trend is turning.
 
 Respond with ONLY this JSON:
 {"classification": "TRENDING_UP"|"TRENDING_DOWN"|"RANGING"|"CHOPPY"|"REVERSAL",
@@ -709,9 +715,8 @@ def ai_ask_claude(strat, spot, daily_closes):
         net = daily_closes[-1] - daily_closes[0]
         trend = (f"\nLast {len(daily_closes)} daily closes: "
                  + ", ".join(f"{v:.0f}" for v in daily_closes)
-                 + f"\nNet multi-day: {net:+.0f}")
+                 + f"\nNet multi-day: {net:+.0f} (context only -- not a hard rule)")
 
-    # Use the day's TRUE high/low, not the last 40 ticks of spot.
     hi = strat.get("day_high")
     lo = strat.get("day_low")
     intraday = ""
@@ -753,8 +758,6 @@ def tick_ai_analyst(strat, spot, hm):
     if len(rs_list) > 40:
         del rs_list[:-40]
 
-    # Track today's TRUE high/low. recent_spots is capped at 40 entries
-    # (120 seconds at 3-second ticks) and cannot be used for day-range.
     if strat.get("day_high") is None or spot > strat["day_high"]:
         strat["day_high"] = spot
     if strat.get("day_low") is None or spot < strat["day_low"]:
@@ -792,14 +795,13 @@ def tick_ai_analyst(strat, spot, hm):
     confidence = _sf(decision.get("confidence"))
     if direction == "neutral":
         return
-    if len(daily) >= 2:
-        net = daily[-1] - daily[0]
-        if net < 0 and direction == "bullish":
-            log("INFO", f"[{strat['name']}] filtered bullish — multi-day down {net:+.0f}")
-            return
-        if net > 0 and direction == "bearish":
-            log("INFO", f"[{strat['name']}] filtered bearish — multi-day up {net:+.0f}")
-            return
+
+    # NOTE: The multi-day filter that used to sit here has been removed.
+    # The AI sees the multi-day net in its prompt and factors it into its
+    # confidence number. Blocking on the sign of that number was overriding
+    # a correct high-conviction counter-trend call (Oct 9, 2026: bullish 62%
+    # into a -237 multi-day, followed by a 100+ point rally).
+
     if confidence < AI_MIN_CONFIDENCE:
         log("INFO", f"[{strat['name']}] confidence {confidence} below {AI_MIN_CONFIDENCE}")
         return
