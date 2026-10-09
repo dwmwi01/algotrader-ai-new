@@ -1,0 +1,7 @@
+{
+  "orb_target_multiple": 2.0,
+  "risk_amount": 2000,
+  "min_target_multiple": 1.5,
+  "max_target_multiple": 3.0,
+  "learning_step": 0.1
+}
