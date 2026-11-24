@@ -7,11 +7,125 @@ import json
 import random
 
 # ==========================================
-# 1. CONFIGURATION & STATE MANAGEMENT
+# 1. PAGE CONFIG & CUSTOM CSS (THE MAKEOVER)
 # ==========================================
-st.set_page_config(page_title="Hermes Web App", layout="wide")
+st.set_page_config(page_title="Hermes Quant Engine", layout="wide", page_icon="⚡")
 
-# Default Settings (The "Notebook")
+# Inject Custom CSS
+st.markdown("""
+<style>
+    /* Global Background */
+    .stApp {
+        background-color: #0A0E17;
+        color: #E2E8F0;
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Header Styling */
+    h1, h2, h3 {
+        color: #FFFFFF;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+    }
+    
+    /* Custom Metric Cards */
+    .metric-card {
+        background: linear-gradient(145deg, #131A29, #0D121C);
+        border: 1px solid #1F2937;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+        text-align: center;
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        border-color: #3B82F6;
+    }
+    .metric-label {
+        font-size: 12px;
+        color: #9CA3AF;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        font-weight: 600;
+        margin-bottom: 5px;
+    }
+    .metric-value {
+        font-size: 28px;
+        font-weight: 800;
+        color: #FFFFFF;
+    }
+    .metric-value.profit { color: #10B981; text-shadow: 0 0 10px rgba(16, 185, 129, 0.3); }
+    .metric-value.loss { color: #EF4444; text-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
+    .metric-value.state { color: #3B82F6; text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
+    
+    /* Terminal Log Box */
+    .terminal-box {
+        background-color: #000000;
+        border: 1px solid #1F2937;
+        border-radius: 8px;
+        padding: 15px;
+        height: 400px;
+        overflow-y: auto;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 14px;
+        color: #A3B8CC;
+        line-height: 1.5;
+    }
+    .terminal-box span.time { color: #6B7280; }
+    .terminal-box span.profit { color: #10B981; }
+    .terminal-box span.loss { color: #EF4444; }
+    .terminal-box span.alert { color: #F59E0B; }
+    
+    /* Buttons */
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        transition: all 0.3s ease;
+        border: none;
+    }
+    /* Start Button */
+    .stButton>button:contains("Start") {
+        background-color: #10B981;
+        color: white;
+    }
+    .stButton>button:contains("Start"):hover {
+        background-color: #059669;
+        box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+    }
+    /* Stop Button */
+    .stButton>button:contains("Stop") {
+        background-color: #EF4444;
+        color: white;
+    }
+    .stButton>button:contains("Stop"):hover {
+        background-color: #DC2626;
+        box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 20px;
+        background-color: #0A0E17;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 20px;
+        color: #9CA3AF;
+        font-weight: 600;
+        border-radius: 8px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1F2937;
+        color: #FFFFFF;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. CONFIGURATION & STATE MANAGEMENT
+# ==========================================
 if 'config' not in st.session_state:
     st.session_state.config = {
         "risk_amount": 2000,
@@ -20,7 +134,6 @@ if 'config' not in st.session_state:
         "trailing_stop_multiple": 0.5
     }
 
-# Mock Broker (Realistic Simulation)
 class MockBroker:
     def __init__(self):
         self.price = 22400.0
@@ -29,7 +142,6 @@ class MockBroker:
         self.side = None
         
     def get_ltp(self):
-        # Simulate market movement (slight upward trend for testing)
         change = random.uniform(-10, 12) + 0.5
         self.price += change
         return round(self.price, 2)
@@ -38,43 +150,26 @@ class MockBroker:
         if action == "BUY":
             self.entry_spot = spot
             self.side = side
-            # Base premium 150
             self.entry_premium = 150.0 + random.uniform(-3, 3) 
             return round(self.entry_premium, 2)
-            
         elif action == "SELL":
-            # Realistic premium tracking based on Spot movement
             spot_move = spot - self.entry_spot
             if self.side == "CE":
-                premium_change = spot_move * 0.5 # Delta of 0.5
+                premium_change = spot_move * 0.5
             else:
                 premium_change = -spot_move * 0.5
-                
             exit_premium = self.entry_premium + premium_change + random.uniform(-1, 1)
             return max(1.0, round(exit_premium, 2))
 
 if 'broker' not in st.session_state:
     st.session_state.broker = MockBroker()
 
-# Strategy State
 if 'strategy' not in st.session_state:
     st.session_state.strategy = {
-        "state": "WAIT_RANGE",
-        "range_high": None,
-        "range_low": None,
-        "width": None,
-        "qty": None,
-        "remaining_qty": None,
-        "side": None,
-        "entry_spot": None,
-        "entry_premium": None,
-        "has_scaled_out": False,
-        "highest_lowest": None,
-        "day_pnl": 0.0,
-        "logs": [],
-        "is_running": False,
-        "tick_count": 0,
-        "sim_time": "09:15"
+        "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
+        "qty": None, "remaining_qty": None, "side": None, "entry_spot": None,
+        "entry_premium": None, "has_scaled_out": False, "highest_lowest": None,
+        "day_pnl": 0.0, "logs": [], "is_running": False, "tick_count": 0, "sim_time": "09:15"
     }
 
 def log_message(msg):
@@ -84,44 +179,73 @@ def log_message(msg):
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
-# 2. UI LAYOUT & TABS
+# 3. UI LAYOUT
 # ==========================================
-st.title("⚡ Hermes Unified Trading System")
+st.markdown("<h1>⚡ HERMES QUANT ENGINE</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
-tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Trading (Golden Trio)", "🧪 Backtester", "🧠 Self-Learning Coach"])
+tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Execution", "🧪 Backtester", "🧠 EOD Learner"])
 
 # ------------------------------------------
 # TAB 1: LIVE TRADING
 # ------------------------------------------
 with tab_live:
+    s = st.session_state.strategy
+    
+    # Custom Metric Cards
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    metric_state = col1.empty()
-    metric_range = col2.empty()
-    metric_qty = col3.empty()
-    metric_pnl = col4.empty()
-    metric_time = col5.empty()
+    pnl_color = "profit" if s["day_pnl"] > 0 else "loss" if s["day_pnl"] < 0 else ""
+    
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Engine State</div>
+            <div class="metric-value state">{s["state"]}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        range_text = f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "WAITING"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">ORB Range</div>
+            <div class="metric-value" style="font-size: 20px;">{range_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        qty_text = s["remaining_qty"] if s["remaining_qty"] else "-"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Active Qty</div>
+            <div class="metric-value">{qty_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Day P&L</div>
+            <div class="metric-value {pnl_color}">₹{s['day_pnl']:.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col5:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Sim Time</div>
+            <div class="metric-value">{s['sim_time']}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    def update_metrics():
-        s = st.session_state.strategy
-        metric_state.metric("State", s["state"])
-        metric_range.metric("ORB Range", f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "Waiting...")
-        metric_qty.metric("Qty", s["remaining_qty"] if s["remaining_qty"] else "-")
-        metric_pnl.metric("Day P&L", f"₹{s['day_pnl']:.2f}")
-        metric_time.metric("Simulated Time", s["sim_time"])
-
-    update_metrics()
-
-    st.markdown("### Engine Controls")
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Controls
     col_btn1, col_btn2, col_btn3 = st.columns(3)
-    if col_btn1.button("▶️ Start Engine", use_container_width=True):
+    if col_btn1.button("▶ START ENGINE", use_container_width=True):
         st.session_state.strategy["is_running"] = True
         log_message("Engine Started. Building 09:30-09:44 Range...")
-    if col_btn2.button("⏹️ Stop Engine", use_container_width=True):
+    if col_btn2.button("⏹ STOP ENGINE", use_container_width=True):
         st.session_state.strategy["is_running"] = False
         log_message("Engine Stopped.")
-    if col_btn3.button("🔄 Reset Day", use_container_width=True):
+    if col_btn3.button("🔄 RESET DAY", use_container_width=True):
         st.session_state.strategy = {
             "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
             "qty": None, "remaining_qty": None, "side": None, "entry_spot": None,
@@ -131,15 +255,15 @@ with tab_live:
         st.session_state.broker = MockBroker()
         st.rerun()
 
-    st.markdown("### Live Logs")
+    st.markdown("### System Logs")
     log_container = st.empty()
 
+    # --- SIMULATION LOOP ---
     if st.session_state.strategy["is_running"]:
         s = st.session_state.strategy
         config = st.session_state.config
         s["tick_count"] += 1
         
-        # Simulate Time passing (1 tick = 1 minute)
         sim_minute = 15 + s["tick_count"]
         hour = 9 + (sim_minute // 60)
         minute = sim_minute % 60
@@ -147,7 +271,6 @@ with tab_live:
 
         spot = st.session_state.broker.get_ltp()
 
-        # --- 1. BUILD OPENING RANGE ---
         if s["state"] == "WAIT_RANGE":
             if s["sim_time"] < "09:30":
                 log_message(f"Pre-market. Spot: {spot}")
@@ -174,7 +297,6 @@ with tab_live:
                         s["state"] = "ARMED"
                         log_message(f"Range Locked: {s['range_low']} - {s['range_high']} | Qty: {s['qty']}. Armed.")
 
-        # --- 2. WAIT FOR BREAKOUT ---
         elif s["state"] == "ARMED":
             if spot > s["range_high"]:
                 s["side"] = "CE"
@@ -193,14 +315,12 @@ with tab_live:
             else:
                 log_message(f"Armed. Spot: {spot} | Waiting for breakout...")
 
-        # --- 3. MANAGE TRADE (GOLDEN TRIO) ---
         elif s["state"] == "IN_TRADE":
             if s["side"] == "CE":
                 s["highest_lowest"] = max(s["highest_lowest"], spot)
             else:
                 s["highest_lowest"] = min(s["highest_lowest"], spot)
 
-            # A. Original Stop Loss
             if (s["side"] == "CE" and spot < s["range_low"]) or (s["side"] == "PE" and spot > s["range_high"]):
                 exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                 pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
@@ -208,12 +328,10 @@ with tab_live:
                 s["state"] = "DONE"
                 log_message(f"❌ STOPLOSS HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
 
-            # B. Scale Out
             elif not s["has_scaled_out"]:
                 scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
                 
                 if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
-                    # Calculate half quantity (rounded to nearest lot)
                     half_qty = (s["remaining_qty"] // 2 // 75) * 75
                     
                     if half_qty > 0:
@@ -226,13 +344,11 @@ with tab_live:
                         log_message(f"🎯 TARGET HIT, but only 1 lot. Holding for trailing stop.")
                         
                     s["has_scaled_out"] = True
-                    # Move SL to Break-Even
                     if s["side"] == "CE":
                         s["range_low"] = s["entry_spot"]
                     else:
                         s["range_high"] = s["entry_spot"]
 
-            # C. Trailing Stop
             elif s["has_scaled_out"]:
                 trail_dist = config["trailing_stop_multiple"] * s["width"]
                 trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
@@ -248,12 +364,27 @@ with tab_live:
                 dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                 log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Update UI and loop
-        update_metrics()
-        log_container.text("\n".join(s["logs"]))
+        # Render Custom Terminal Logs
+        log_html = "<div class='terminal-box'>"
+        for log in s["logs"]:
+            # Colorize based on keywords
+            css_class = ""
+            if "EXIT" in log or "PnL" in log or "TARGET" in log or "BREAKOUT" in log:
+                css_class = "profit" if "₹" in log and "-" not in log.split("₹")[1] else "loss"
+            elif "CHOP" in log or "STOPLOSS" in log:
+                css_class = "alert"
+            
+            # Split timestamp from message
+            parts = log.split(" ", 1)
+            if len(parts) == 2:
+                log_html += f"<span class='time'>{parts[0]}</span> <span class='{css_class}'>{parts[1]}</span><br>"
+            else:
+                log_html += f"<span class='{css_class}'>{log}</span><br>"
+        log_html += "</div>"
+        log_container.markdown(log_html, unsafe_allow_html=True)
         
         if s["is_running"] and s["state"] != "DONE":
-            time.sleep(1.0) # Controls simulation speed
+            time.sleep(1.0)
             st.rerun()
         elif s["is_running"] and s["state"] == "DONE":
             log_message("--- TRADING DAY COMPLETE ---")
@@ -261,7 +392,21 @@ with tab_live:
             st.rerun()
 
     else:
-        log_container.text("\n".join(st.session_state.strategy["logs"]))
+        # Render logs even when stopped
+        log_html = "<div class='terminal-box'>"
+        for log in st.session_state.strategy["logs"]:
+            css_class = ""
+            if "EXIT" in log or "PnL" in log or "TARGET" in log or "BREAKOUT" in log:
+                css_class = "profit" if "₹" in log and "-" not in log.split("₹")[1] else "loss"
+            elif "CHOP" in log or "STOPLOSS" in log:
+                css_class = "alert"
+            parts = log.split(" ", 1)
+            if len(parts) == 2:
+                log_html += f"<span class='time'>{parts[0]}</span> <span class='{css_class}'>{parts[1]}</span><br>"
+            else:
+                log_html += f"<span class='{css_class}'>{log}</span><br>"
+        log_html += "</div>"
+        log_container.markdown(log_html, unsafe_allow_html=True)
 
 # ------------------------------------------
 # TAB 2: BACKTESTER
