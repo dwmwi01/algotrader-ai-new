@@ -1,5 +1,3 @@
-fastapi
-uvicorn[standard]
-requests
-pyyaml
-fyers-apiv3
+streamlit
+pandas
+numpy
