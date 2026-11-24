@@ -93,7 +93,37 @@ st.markdown("""
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
 
-    /* 4. BUTTONS (Iridescent vs Dark Glass) */
+    /* 4. CUSTOM PILL TABS */
+    .tab-container {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 25px;
+    }
+    .custom-tab {
+        padding: 8px 24px;
+        border-radius: 50px;
+        font-weight: 600;
+        font-size: 14px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(20, 30, 50, 0.4);
+        color: #A1A1AA;
+        text-decoration: none;
+    }
+    .custom-tab:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #FFFFFF;
+    }
+    .custom-tab.active {
+        background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), rgba(168, 85, 247, 0.15));
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: #FFFFFF;
+        box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+    }
+
+    /* 5. BUTTONS */
     .stButton>button {
         width: 100%;
         border-radius: 50px !important;
@@ -103,7 +133,6 @@ st.markdown("""
         transition: all 0.3s ease;
         border: none;
     }
-    
     /* Primary Button (START) */
     .stButton>button[kind="primary"] {
         background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%) !important;
@@ -114,7 +143,6 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6) !important;
         transform: translateY(-1px);
     }
-    
     /* Secondary Button (STOP) */
     .stButton>button[kind="secondary"] {
         background: rgba(20, 30, 50, 0.6) !important;
@@ -125,48 +153,6 @@ st.markdown("""
         background: rgba(244, 63, 94, 0.1) !important;
         border-color: rgba(244, 63, 94, 0.8) !important;
         box-shadow: 0 0 15px rgba(244, 63, 94, 0.4) !important;
-    }
-
-    /* 5. FORCE PILL TABS */
-    /* Target the tab list container */
-    div[data-baseweb="tab-list"] {
-        gap: 15px !important;
-        background-color: transparent !important;
-        border-bottom: none !important;
-        padding-bottom: 10px !important;
-    }
-
-    /* Target the individual tabs */
-    button[data-baseweb="tab"] {
-        background-color: rgba(20, 30, 50, 0.4) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 50px !important;
-        padding: 8px 24px !important;
-        color: #A1A1AA !important;
-        font-weight: 500 !important;
-        transition: all 0.3s ease !important;
-    }
-
-    /* Hover state */
-    button[data-baseweb="tab"]:hover {
-        background-color: rgba(255, 255, 255, 0.1) !important;
-        color: #FFFFFF !important;
-    }
-
-    /* Active Tab */
-    button[aria-selected="true"] {
-        background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), rgba(168, 85, 247, 0.15)) !important;
-        border: 1px solid rgba(255, 255, 255, 0.3) !important;
-        color: #FFFFFF !important;
-        box-shadow: 0 0 15px rgba(168, 85, 247, 0.2) !important;
-    }
-
-    /* COMPLETELY HIDE the default red underline and border */
-    div[data-baseweb="tab-highlight"] {
-        display: none !important;
-    }
-    div[data-baseweb="tab-border"] {
-        display: none !important;
     }
 
     /* 6. 3D GLASS LOG CONTAINER */
@@ -207,6 +193,9 @@ st.markdown("""
 # ==========================================
 # 2. CONFIGURATION & STATE
 # ==========================================
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "Live Execution"
+
 if 'config' not in st.session_state:
     st.session_state.config = {
         "risk_amount": 2000, "chop_killer_max_range": 120,
@@ -254,17 +243,32 @@ def log_message(msg):
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
-# 3. UI LAYOUT
+# 3. UI LAYOUT & CUSTOM TABS
 # ==========================================
 st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
 
-tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EOD Learner"])
+# Custom Tab Navigation using Buttons
+col_t1, col_t2, col_t3, _ = st.columns([1, 1, 1, 3])
+with col_t1:
+    if st.button("Live Execution", use_container_width=True, type="primary" if st.session_state.active_tab == "Live Execution" else "secondary"):
+        st.session_state.active_tab = "Live Execution"
+        st.rerun()
+with col_t2:
+    if st.button("Backtester", use_container_width=True, type="primary" if st.session_state.active_tab == "Backtester" else "secondary"):
+        st.session_state.active_tab = "Backtester"
+        st.rerun()
+with col_t3:
+    if st.button("EOD Learner", use_container_width=True, type="primary" if st.session_state.active_tab == "EOD Learner" else "secondary"):
+        st.session_state.active_tab = "EOD Learner"
+        st.rerun()
+
+st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
 # ------------------------------------------
-# TAB 1: LIVE TRADING
+# TAB CONTENT: LIVE EXECUTION
 # ------------------------------------------
-with tab_live:
+if st.session_state.active_tab == "Live Execution":
     s = st.session_state.strategy
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -288,12 +292,10 @@ with tab_live:
     # --- SINGLE TOGGLE BUTTON ---
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
-        # Dynamically change label and style based on state
         btn_label = "⏹ STOP ENGINE" if s["is_running"] else "▶ START ENGINE"
         btn_type = "secondary" if s["is_running"] else "primary"
         
         if st.button(btn_label, use_container_width=True, type=btn_type):
-            # Toggle the state
             st.session_state.strategy["is_running"] = not st.session_state.strategy["is_running"]
             if st.session_state.strategy["is_running"]:
                 log_message("Engine Started. Building 09:30-09:44 Range...")
@@ -316,7 +318,6 @@ with tab_live:
     log_container = st.empty()
 
     if s["is_running"]:
-        s = st.session_state.strategy
         config = st.session_state.config
         s["tick_count"] += 1
         
@@ -447,9 +448,9 @@ with tab_live:
         log_container.markdown(log_html, unsafe_allow_html=True)
 
 # ------------------------------------------
-# TAB 2: BACKTESTER
+# TAB CONTENT: BACKTESTER
 # ------------------------------------------
-with tab_backtest:
+elif st.session_state.active_tab == "Backtester":
     st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
     st.write("Upload a CSV of NIFTY 1-minute data to test the Golden Trio.")
     
@@ -467,9 +468,9 @@ with tab_backtest:
         st.info("Please upload a CSV file.")
 
 # ------------------------------------------
-# TAB 3: SELF-LEARNING COACH
+# TAB CONTENT: SELF-LEARNING COACH
 # ------------------------------------------
-with tab_learn:
+elif st.session_state.active_tab == "EOD Learner":
     st.markdown("<h3>EOD Self-Learning Coach</h3>", unsafe_allow_html=True)
     st.write("Adjust the strategy parameters manually, or let the Coach learn from today's data.")
 
