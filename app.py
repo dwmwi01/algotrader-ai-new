@@ -6,7 +6,6 @@ import datetime
 import json
 import random
 import os
-import urllib.parse
 from fyers_apiv3 import fyersModel
 
 # ==========================================
@@ -186,13 +185,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FYERS OAUTH 2.0 CONFIGURATION
+# 2. FYERS OAUTH 2.0 CONFIGURATION (YOUR CREDENTIALS)
 # ==========================================
-# IMPORTANT: Replace these with your actual credentials from the Fyers API Dashboard.
-# The redirect_uri MUST be the exact public URL of your deployed Streamlit app.
-FYERS_CLIENT_ID = "YOUR_APP_ID-100"      # e.g., "3SULFH5YXW-100"
-FYERS_SECRET_KEY = "YOUR_SECRET_ID"       # e.g., "tvGINeSAUY8JqLZ5"
-FYERS_REDIRECT_URI = "https://your-app-name.up.railway.app" # Your app's public URL
+FYERS_CLIENT_ID = "88UNAKT8M3-200"
+FYERS_SECRET_KEY = "tvGINeSAUY8JqLZ5"
+FYERS_REDIRECT_URI = "https://algotrader-production-0907.up.railway.app/callback"
 
 # ==========================================
 # 3. FYERS BROKER CLASS
@@ -426,7 +423,6 @@ def log_message(msg):
 # 7. OAUTH FLOW HANDLER
 # ==========================================
 def handle_fyers_auth_callback():
-    """Checks URL parameters for an auth_code and exchanges it for an access token."""
     query_params = st.query_params
     if "auth_code" in query_params and not st.session_state.fyers_connected:
         auth_code = query_params["auth_code"]
@@ -448,7 +444,8 @@ def handle_fyers_auth_callback():
                     st.session_state.broker = broker
                     st.session_state.fyers_connected = True
                     st.success("✅ Successfully connected to Fyers!")
-                    st.query_params.clear()  # Clear the auth_code from the URL
+                    st.query_params.clear() 
+                    time.sleep(1)
                     st.rerun()
                 else:
                     st.error(f"Token exchange succeeded, but connection failed: {message}")
@@ -463,7 +460,6 @@ def handle_fyers_auth_callback():
 st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
 
-# Handle the OAuth callback before rendering the UI
 handle_fyers_auth_callback()
 
 with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyers_connected):
@@ -474,7 +470,6 @@ with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyer
             st.session_state.broker = None
             st.rerun()
     else:
-        # Generate the Fyers login URL using the SDK's SessionModel
         auth_session = fyersModel.SessionModel(
             client_id=FYERS_CLIENT_ID,
             secret_key=FYERS_SECRET_KEY,
@@ -501,7 +496,7 @@ with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyer
             ">Connect Fyers</button>
         </a>
         """, unsafe_allow_html=True)
-        st.info("Click the button above to log in with your Fyers credentials. You will be redirected back to this app automatically.")
+        st.info("Click the button above to log in with your Fyers credentials.")
 
 # ==========================================
 # 9. CUSTOM TAB NAVIGATION
