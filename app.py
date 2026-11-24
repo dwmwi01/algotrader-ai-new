@@ -7,173 +7,193 @@ import json
 import random
 
 # ==========================================
-# 1. PAGE CONFIG & MODERN DARK SAAS CSS
+# 1. PAGE CONFIG & 3D GLASSMORPHISM CSS
 # ==========================================
 st.set_page_config(page_title="Hermes OS", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    /* 1. GLOBAL SETTINGS */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+    /* 1. GLOBAL BACKGROUND */
     [data-testid="stAppViewContainer"] {
-        background-color: #09090B; /* Very dark, almost black background */
-        color: #FAFAFA;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: #0B0F19;
+        background-image: radial-gradient(circle at 50% 0%, #1A233A 0%, #0B0F19 70%);
+        color: #FFFFFF;
+        font-family: 'Inter', sans-serif;
     }
     
-    /* Hide Streamlit default clutter */
+    /* Hide Streamlit Clutter */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
     /* 2. TYPOGRAPHY */
     h1 {
-        font-weight: 700;
-        font-size: 32px;
+        font-weight: 800;
+        font-size: 36px;
         letter-spacing: -0.05em;
-        color: #FFFFFF;
-        margin-bottom: 5px;
-    }
-    h3 {
-        font-weight: 600;
-        font-size: 18px;
-        color: #E4E4E7;
-        margin-top: 25px;
-        margin-bottom: 15px;
+        background: linear-gradient(90deg, #FFFFFF, #A1A1AA);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0px;
     }
     .subtitle {
-        color: #A1A1AA;
+        color: #94A3B8;
         font-size: 15px;
         margin-bottom: 30px;
     }
-
-    /* 3. MODERN CARDS */
-    .metric-card {
-        background: #18181B; /* Dark grey card */
-        border: 1px solid #27272A; /* Subtle border */
-        border-radius: 16px;
-        padding: 20px;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        transition: all 0.3s ease;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
+    h3 {
+        font-weight: 600;
+        color: #E2E8F0;
+        font-size: 18px;
+        margin-top: 25px;
+        margin-bottom: 15px;
     }
-    .metric-card:hover {
-        border-color: #3F3F46;
+
+    /* 3. 3D GLASSMORPHISM CARDS */
+    .glass-card {
+        background: rgba(20, 30, 50, 0.4);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 24px;
+        padding: 24px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        position: relative;
+        overflow: hidden;
+        transition: all 0.3s ease;
+    }
+    /* Top highlight for 3D effect */
+    .glass-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0; height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+    }
+    .glass-card:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+        border-color: rgba(255, 255, 255, 0.15);
+        box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
     }
     .card-label {
-        font-size: 13px;
-        font-weight: 500;
-        color: #A1A1AA;
-        letter-spacing: 0.5px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #94A3B8;
+        letter-spacing: 1px;
         text-transform: uppercase;
+        margin-bottom: 8px;
     }
     .card-value {
-        font-size: 26px;
+        font-size: 28px;
         font-weight: 700;
         color: #FFFFFF;
+        text-shadow: 0 2px 10px rgba(255,255,255,0.1);
     }
-    .val-profit { color: #10B981; } /* Soft Neon Green */
-    .val-loss { color: #F43F5E; }   /* Soft Neon Red */
-    .val-blue { color: #3B82F6; }   /* Primary Blue */
-    .val-purple { color: #A855F7; } /* For AI */
+    .val-profit { color: #10B981; text-shadow: 0 0 15px rgba(16,185,129,0.3); }
+    .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
+    .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
+    .val-purple { color: #A855F7; text-shadow: 0 0 15px rgba(168,85,247,0.3); }
 
-    /* 4. LOGS / ACTIVITY FEED */
+    /* 4. IRIDESCENT 3D BUTTONS */
+    .stButton>button {
+        width: 100%;
+        border-radius: 50px; /* Pill shape from your image */
+        font-weight: 600;
+        font-size: 15px;
+        padding: 12px 0;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+        border: none;
+    }
+    
+    /* Start Button - Iridescent Gradient */
+    .stButton>button[kind="primary"] {
+        background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%);
+        color: #FFFFFF;
+        box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4);
+    }
+    .stButton>button[kind="primary"]:hover {
+        box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6);
+        transform: translateY(-1px);
+    }
+
+    /* Stop Button - Dark Glass with Neon Red Glow */
+    .stButton>button:not([kind="primary"]):contains("STOP") {
+        background: rgba(20, 30, 50, 0.6);
+        color: #F43F5E;
+        border: 1px solid rgba(244, 63, 94, 0.3);
+        box-shadow: inset 0 0 20px rgba(244, 63, 94, 0.1);
+    }
+    .stButton>button:not([kind="primary"]):contains("STOP"):hover {
+        background: rgba(244, 63, 94, 0.1);
+        border-color: rgba(244, 63, 94, 0.8);
+        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4);
+    }
+
+    /* Reset Button - Dark Glass */
+    .stButton>button:not([kind="primary"]):contains("RESET") {
+        background: rgba(255, 255, 255, 0.05);
+        color: #A1A1AA;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    /* 5. TABS - Glowing Pills */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+        background-color: transparent;
+        border-bottom: none;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 24px;
+        color: #A1A1AA;
+        font-weight: 500;
+        border-radius: 50px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        transition: all 0.2s;
+    }
+    .stTabs [aria-selected="true"] {
+        background: rgba(255, 255, 255, 0.1);
+        color: #FFFFFF;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 0 15px rgba(255,255,255,0.1);
+    }
+
+    /* 6. 3D GLASS LOG CONTAINER */
     .log-container {
-        background: #18181B;
-        border: 1px solid #27272A;
-        border-radius: 16px;
-        padding: 10px;
-        height: 450px;
+        background: rgba(10, 15, 25, 0.6);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 20px;
+        padding: 15px;
+        height: 400px;
         overflow-y: auto;
-        box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+        box-shadow: inset 0 4px 20px rgba(0,0,0,0.5), 0 8px 32px rgba(0,0,0,0.3);
     }
-    /* Custom Scrollbar */
-    .log-container::-webkit-scrollbar { width: 8px; }
-    .log-container::-webkit-scrollbar-track { background: #18181B; border-radius: 8px; }
-    .log-container::-webkit-scrollbar-thumb { background: #3F3F46; border-radius: 8px; }
-    .log-container::-webkit-scrollbar-thumb:hover { background: #52525B; }
-
+    .log-container::-webkit-scrollbar { width: 6px; }
+    .log-container::-webkit-scrollbar-track { background: transparent; }
+    .log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+    
     .log-item {
-        padding: 12px 16px;
-        border-bottom: 1px solid #27272A;
+        padding: 10px 15px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.03);
         font-size: 14px;
         display: flex;
         gap: 15px;
-        align-items: flex-start;
     }
     .log-item:last-child { border-bottom: none; }
     .log-time {
-        color: #71717A;
-        font-family: 'Courier New', Courier, monospace;
+        color: #64748B;
+        font-family: 'Courier New', monospace;
         font-size: 12px;
         min-width: 65px;
-        padding-top: 2px;
     }
-    .log-msg { color: #D4D4D8; line-height: 1.4; }
-    .log-msg.profit { color: #10B981; font-weight: 500; }
-    .log-msg.loss { color: #F43F5E; font-weight: 500; }
-    .log-msg.alert { color: #F59E0B; font-weight: 500; }
-    
-    /* 5. BUTTONS */
-    .stButton>button {
-        width: 100%;
-        border-radius: 10px;
-        font-weight: 600;
-        font-size: 14px;
-        padding: 10px 0;
-        transition: all 0.2s ease;
-        border: 1px solid transparent;
-    }
-    /* Start Button */
-    .stButton>button:contains("START ENGINE") {
-        background-color: #FAFAFA;
-        color: #09090B;
-    }
-    .stButton>button:contains("START ENGINE"):hover {
-        background-color: #E4E4E7;
-        box-shadow: 0 0 15px rgba(255, 255, 255, 0.1);
-    }
-    /* Stop Button */
-    .stButton>button:contains("STOP ENGINE") {
-        background-color: transparent;
-        color: #F43F5E;
-        border: 1px solid #F43F5E;
-    }
-    .stButton>button:contains("STOP ENGINE"):hover {
-        background-color: rgba(244, 63, 94, 0.1);
-    }
-    /* Reset Button */
-    .stButton>button:contains("RESET DAY") {
-        background-color: #27272A;
-        color: #FAFAFA;
-        border: 1px solid #3F3F46;
-    }
-    .stButton>button:contains("RESET DAY"):hover {
-        background-color: #3F3F46;
-    }
-
-    /* 6. TABS */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-        background-color: #18181B;
-        padding: 5px;
-        border-radius: 12px;
-        border: 1px solid #27272A;
-    }
-    .stTabs [data-baseweb="tab"] {
-        padding: 8px 16px;
-        color: #A1A1AA;
-        font-weight: 500;
-        border-radius: 8px;
-        background-color: transparent;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #27272A;
-        color: #FFFFFF;
-    }
+    .log-msg { color: #CBD5E1; }
+    .log-msg.profit { color: #10B981; font-weight: 600; text-shadow: 0 0 10px rgba(16,185,129,0.3); }
+    .log-msg.loss { color: #F43F5E; font-weight: 600; text-shadow: 0 0 10px rgba(244,63,94,0.3); }
+    .log-msg.alert { color: #F59E0B; font-weight: 600; text-shadow: 0 0 10px rgba(245,158,11,0.3); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -229,8 +249,8 @@ def log_message(msg):
 # ==========================================
 # 3. UI LAYOUT
 # ==========================================
-st.markdown("<h1>Hermes OS</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Algorithmic Execution & Portfolio Management</p>", unsafe_allow_html=True)
+st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
 
 tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EOD Learner"])
 
@@ -240,29 +260,29 @@ tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EO
 with tab_live:
     s = st.session_state.strategy
     
-    # Metric Cards Row
+    # 3D Glass Cards Row
     col1, col2, col3, col4, col5 = st.columns(5)
     
     pnl_class = "val-profit" if s["day_pnl"] > 0 else "val-loss" if s["day_pnl"] < 0 else ""
     
     with col1:
-        st.markdown(f'<div class="metric-card"><div class="card-label">Engine State</div><div class="card-value val-blue">{s["state"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="glass-card"><div class="card-label">Engine State</div><div class="card-value val-blue">{s["state"]}</div></div>', unsafe_allow_html=True)
     with col2:
         range_text = f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "Waiting"
-        st.markdown(f'<div class="metric-card"><div class="card-label">ORB Range</div><div class="card-value" style="font-size: 20px;">{range_text}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="glass-card"><div class="card-label">ORB Range</div><div class="card-value" style="font-size: 20px;">{range_text}</div></div>', unsafe_allow_html=True)
     with col3:
         qty_text = s["remaining_qty"] if s["remaining_qty"] else "--"
-        st.markdown(f'<div class="metric-card"><div class="card-label">Active Qty</div><div class="card-value">{qty_text}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="glass-card"><div class="card-label">Active Qty</div><div class="card-value">{qty_text}</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f'<div class="metric-card"><div class="card-label">Day P&L</div><div class="card-value {pnl_class}">₹{s["day_pnl"]:.2f}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="glass-card"><div class="card-label">Day P&L</div><div class="card-value {pnl_class}">₹{s["day_pnl"]:.2f}</div></div>', unsafe_allow_html=True)
     with col5:
-        st.markdown(f'<div class="metric-card"><div class="card-label">Sim Time</div><div class="card-value">{s["sim_time"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="glass-card"><div class="card-label">Sim Time</div><div class="card-value">{s["sim_time"]}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Controls
+    # Controls (Note: Start button uses type="primary" to trigger the iridescent CSS)
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
-    if col_btn1.button("START ENGINE", use_container_width=True):
+    if col_btn1.button("START ENGINE", use_container_width=True, type="primary"):
         st.session_state.strategy["is_running"] = True
         log_message("Engine Started. Building 09:30-09:44 Range...")
     if col_btn2.button("STOP ENGINE", use_container_width=True):
@@ -380,7 +400,7 @@ with tab_live:
                 dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                 log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Render Activity Feed
+        # Render 3D Glass Feed
         log_html = "<div class='log-container'>"
         for item in s["logs"]:
             msg = item["msg"]
@@ -426,7 +446,7 @@ with tab_backtest:
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file, index_col='datetime', parse_dates=True)
         st.write(f"Data Loaded: {len(df)} rows.")
-        if st.button("Run Backtest"):
+        if st.button("Run Backtest", type="primary"):
             with st.spinner("Simulating trades..."):
                 time.sleep(2) 
                 st.success("Backtest Complete!")
@@ -453,7 +473,7 @@ with tab_learn:
         new_scale = st.slider("Scale-Out Multiple", 1.0, 3.0, float(config["scale_out_multiple"]), 0.1)
         new_trail = st.slider("Trailing Stop Multiple", 0.2, 1.0, float(config["trailing_stop_multiple"]), 0.1)
         
-        if st.button("Save New Settings"):
+        if st.button("Save New Settings", type="primary"):
             st.session_state.config["chop_killer_max_range"] = new_chop
             st.session_state.config["scale_out_multiple"] = new_scale
             st.session_state.config["trailing_stop_multiple"] = new_trail
@@ -463,7 +483,7 @@ with tab_learn:
     st.markdown("<h3>Run EOD Learning</h3>", unsafe_allow_html=True)
     st.write("Click below to simulate the 4:00 PM Coach evaluating today's trade.")
     
-    if st.button("🧠 Run EOD Learner Now"):
+    if st.button("🧠 Run EOD Learner Now", type="primary"):
         with st.spinner("Analyzing today's market data..."):
             time.sleep(1.5)
             current_scale = st.session_state.config["scale_out_multiple"]
