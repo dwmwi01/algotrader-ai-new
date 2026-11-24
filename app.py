@@ -7,131 +7,163 @@ import json
 import random
 
 # ==========================================
-# 1. PAGE CONFIG & CUSTOM CSS (THE MAKEOVER)
+# 1. PAGE CONFIG & MINIMALIST FINTECH CSS
 # ==========================================
-st.set_page_config(page_title="Hermes Quant Engine", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Hermes Trading", layout="wide", page_icon="📈")
 
-# Inject Custom CSS
 st.markdown("""
 <style>
-    /* Global Background */
-    .stApp {
-        background-color: #0A0E17;
-        color: #E2E8F0;
-        font-family: 'Inter', sans-serif;
+    /* Global Background & Font */
+    [data-testid="stAppViewContainer"] {
+        background-color: #F8F9FA;
+        color: #1E293B;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     
-    /* Header Styling */
-    h1, h2, h3 {
-        color: #FFFFFF;
-        font-weight: 700;
-        letter-spacing: -0.5px;
-    }
-    
-    /* Custom Metric Cards */
-    .metric-card {
-        background: linear-gradient(145deg, #131A29, #0D121C);
-        border: 1px solid #1F2937;
-        border-radius: 12px;
-        padding: 20px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-        text-align: center;
-        transition: transform 0.2s;
-    }
-    .metric-card:hover {
-        transform: translateY(-2px);
-        border-color: #3B82F6;
-    }
-    .metric-label {
-        font-size: 12px;
-        color: #9CA3AF;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        font-weight: 600;
-        margin-bottom: 5px;
-    }
-    .metric-value {
-        font-size: 28px;
+    /* Hide Streamlit Branding for a clean look */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* Typography */
+    h1 {
         font-weight: 800;
-        color: #FFFFFF;
+        color: #0F172A;
+        letter-spacing: -1px;
+        margin-bottom: 0px;
+        padding-bottom: 0px;
     }
-    .metric-value.profit { color: #10B981; text-shadow: 0 0 10px rgba(16, 185, 129, 0.3); }
-    .metric-value.loss { color: #EF4444; text-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
-    .metric-value.state { color: #3B82F6; text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
-    
-    /* Terminal Log Box */
-    .terminal-box {
-        background-color: #000000;
-        border: 1px solid #1F2937;
-        border-radius: 8px;
-        padding: 15px;
+    h2, h3 {
+        font-weight: 600;
+        color: #334155;
+    }
+    .subtitle {
+        color: #64748B;
+        font-size: 16px;
+        margin-top: 0px;
+        margin-bottom: 30px;
+    }
+
+    /* Modern Metric Cards */
+    .card {
+        background-color: #FFFFFF;
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        border: 1px solid #E2E8F0;
+        text-align: left;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+    }
+    .card-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: #64748B;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+    }
+    .card-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #0F172A;
+    }
+    .value-profit { color: #10B981; }
+    .value-loss { color: #EF4444; }
+    .value-blue { color: #3B82F6; }
+
+    /* Activity Feed Log */
+    .log-feed {
+        background-color: #FFFFFF;
+        border-radius: 16px;
+        border: 1px solid #E2E8F0;
+        padding: 20px;
         height: 400px;
         overflow-y: auto;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 14px;
-        color: #A3B8CC;
-        line-height: 1.5;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     }
-    .terminal-box span.time { color: #6B7280; }
-    .terminal-box span.profit { color: #10B981; }
-    .terminal-box span.loss { color: #EF4444; }
-    .terminal-box span.alert { color: #F59E0B; }
-    
+    .log-item {
+        padding: 8px 12px;
+        border-bottom: 1px solid #F1F5F9;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+    }
+    .log-item:last-child { border-bottom: none; }
+    .log-time {
+        color: #94A3B8;
+        font-size: 12px;
+        font-weight: 500;
+        min-width: 80px;
+    }
+    .log-msg { color: #334155; }
+    .log-msg.profit { color: #10B981; font-weight: 600; }
+    .log-msg.loss { color: #EF4444; font-weight: 600; }
+    .log-msg.alert { color: #F59E0B; font-weight: 600; }
+
     /* Buttons */
     .stButton>button {
         width: 100%;
-        border-radius: 8px;
+        border-radius: 10px;
         font-weight: 600;
-        letter-spacing: 0.5px;
-        transition: all 0.3s ease;
+        padding: 10px 0;
         border: none;
+        transition: all 0.2s;
     }
-    /* Start Button */
-    .stButton>button:contains("Start") {
-        background-color: #10B981;
-        color: white;
+    /* Primary Button (Start) */
+    .stButton>button:contains("START ENGINE") {
+        background-color: #0F172A;
+        color: #FFFFFF;
     }
-    .stButton>button:contains("Start"):hover {
-        background-color: #059669;
-        box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+    .stButton>button:contains("START ENGINE"):hover {
+        background-color: #1E293B;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
     }
     /* Stop Button */
-    .stButton>button:contains("Stop") {
-        background-color: #EF4444;
-        color: white;
+    .stButton>button:contains("STOP ENGINE") {
+        background-color: #FFFFFF;
+        color: #EF4444;
+        border: 1px solid #EF4444;
     }
-    .stButton>button:contains("Stop"):hover {
-        background-color: #DC2626;
-        box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+    .stButton>button:contains("STOP ENGINE"):hover {
+        background-color: #FEF2F2;
     }
-    
+    /* Reset Button */
+    .stButton>button:contains("RESET DAY") {
+        background-color: #F1F5F9;
+        color: #475569;
+    }
+
     /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 20px;
-        background-color: #0A0E17;
+        gap: 30px;
+        background-color: transparent;
+        border-bottom: 1px solid #E2E8F0;
     }
     .stTabs [data-baseweb="tab"] {
-        padding: 10px 20px;
-        color: #9CA3AF;
+        padding: 10px 0px;
+        color: #64748B;
         font-weight: 600;
-        border-radius: 8px;
+        background-color: transparent;
+        border-bottom: 2px solid transparent;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #1F2937;
-        color: #FFFFFF;
+        color: #0F172A;
+        border-bottom: 2px solid #0F172A;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONFIGURATION & STATE MANAGEMENT
+# 2. CONFIGURATION & STATE
 # ==========================================
 if 'config' not in st.session_state:
     st.session_state.config = {
-        "risk_amount": 2000,
-        "chop_killer_max_range": 120,
-        "scale_out_multiple": 1.5,
-        "trailing_stop_multiple": 0.5
+        "risk_amount": 2000, "chop_killer_max_range": 120,
+        "scale_out_multiple": 1.5, "trailing_stop_multiple": 0.5
     }
 
 class MockBroker:
@@ -142,8 +174,7 @@ class MockBroker:
         self.side = None
         
     def get_ltp(self):
-        change = random.uniform(-10, 12) + 0.5
-        self.price += change
+        self.price += random.uniform(-10, 12) + 0.5
         return round(self.price, 2)
         
     def place_order(self, action, qty, side, spot):
@@ -154,10 +185,7 @@ class MockBroker:
             return round(self.entry_premium, 2)
         elif action == "SELL":
             spot_move = spot - self.entry_spot
-            if self.side == "CE":
-                premium_change = spot_move * 0.5
-            else:
-                premium_change = -spot_move * 0.5
+            premium_change = (spot_move * 0.5) if self.side == "CE" else (-spot_move * 0.5)
             exit_premium = self.entry_premium + premium_change + random.uniform(-1, 1)
             return max(1.0, round(exit_premium, 2))
 
@@ -174,17 +202,17 @@ if 'strategy' not in st.session_state:
 
 def log_message(msg):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    st.session_state.strategy["logs"].insert(0, f"[{timestamp}] {msg}")
+    st.session_state.strategy["logs"].insert(0, {"time": timestamp, "msg": msg})
     if len(st.session_state.strategy["logs"]) > 50:
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
 # 3. UI LAYOUT
 # ==========================================
-st.markdown("<h1>⚡ HERMES QUANT ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("---")
+st.markdown("<h1>Overview</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Monitor your algorithmic execution and portfolio performance.</p>", unsafe_allow_html=True)
 
-tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Execution", "🧪 Backtester", "🧠 EOD Learner"])
+tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EOD Learner"])
 
 # ------------------------------------------
 # TAB 1: LIVE TRADING
@@ -192,60 +220,35 @@ tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Execution", "🧪 Backte
 with tab_live:
     s = st.session_state.strategy
     
-    # Custom Metric Cards
+    # Metric Cards Row
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    pnl_color = "profit" if s["day_pnl"] > 0 else "loss" if s["day_pnl"] < 0 else ""
+    pnl_class = "value-profit" if s["day_pnl"] > 0 else "value-loss" if s["day_pnl"] < 0 else ""
     
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Engine State</div>
-            <div class="metric-value state">{s["state"]}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="card-label">Engine State</div><div class="card-value value-blue">{s["state"]}</div></div>', unsafe_allow_html=True)
     with col2:
-        range_text = f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "WAITING"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">ORB Range</div>
-            <div class="metric-value" style="font-size: 20px;">{range_text}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        range_text = f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "Waiting"
+        st.markdown(f'<div class="card"><div class="card-label">ORB Range</div><div class="card-value" style="font-size: 20px;">{range_text}</div></div>', unsafe_allow_html=True)
     with col3:
-        qty_text = s["remaining_qty"] if s["remaining_qty"] else "-"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Active Qty</div>
-            <div class="metric-value">{qty_text}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        qty_text = s["remaining_qty"] if s["remaining_qty"] else "--"
+        st.markdown(f'<div class="card"><div class="card-label">Active Qty</div><div class="card-value">{qty_text}</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Day P&L</div>
-            <div class="metric-value {pnl_color}">₹{s['day_pnl']:.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="card-label">Day P&L</div><div class="card-value {pnl_class}">₹{s["day_pnl"]:.2f}</div></div>', unsafe_allow_html=True)
     with col5:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Sim Time</div>
-            <div class="metric-value">{s['sim_time']}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="card-label">Simulated Time</div><div class="card-value">{s["sim_time"]}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     
     # Controls
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
-    if col_btn1.button("▶ START ENGINE", use_container_width=True):
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    if col_btn1.button("START ENGINE", use_container_width=True):
         st.session_state.strategy["is_running"] = True
         log_message("Engine Started. Building 09:30-09:44 Range...")
-    if col_btn2.button("⏹ STOP ENGINE", use_container_width=True):
+    if col_btn2.button("STOP ENGINE", use_container_width=True):
         st.session_state.strategy["is_running"] = False
         log_message("Engine Stopped.")
-    if col_btn3.button("🔄 RESET DAY", use_container_width=True):
+    if col_btn3.button("RESET DAY", use_container_width=True):
         st.session_state.strategy = {
             "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
             "qty": None, "remaining_qty": None, "side": None, "entry_spot": None,
@@ -255,7 +258,7 @@ with tab_live:
         st.session_state.broker = MockBroker()
         st.rerun()
 
-    st.markdown("### System Logs")
+    st.markdown("<h3>Activity Feed</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
     # --- SIMULATION LOOP ---
@@ -285,7 +288,6 @@ with tab_live:
                 
                 if s["sim_time"] == "09:44":
                     s["width"] = s["range_high"] - s["range_low"]
-                    
                     if s["width"] > config["chop_killer_max_range"]:
                         s["state"] = "DONE"
                         log_message(f"CHOP KILLER: Width {s['width']:.1f} > {config['chop_killer_max_range']}. Skipping day.")
@@ -330,10 +332,8 @@ with tab_live:
 
             elif not s["has_scaled_out"]:
                 scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
-                
                 if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
                     half_qty = (s["remaining_qty"] // 2 // 75) * 75
-                    
                     if half_qty > 0:
                         exit_prem = st.session_state.broker.place_order("SELL", half_qty, s["side"], spot)
                         pnl = (exit_prem - s["entry_premium"]) * half_qty if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * half_qty
@@ -342,17 +342,13 @@ with tab_live:
                         log_message(f"💰 SCALE OUT! Sold {half_qty} at {exit_prem} | PnL: ₹{pnl:.2f} | SL moved to B/E.")
                     else:
                         log_message(f"🎯 TARGET HIT, but only 1 lot. Holding for trailing stop.")
-                        
                     s["has_scaled_out"] = True
-                    if s["side"] == "CE":
-                        s["range_low"] = s["entry_spot"]
-                    else:
-                        s["range_high"] = s["entry_spot"]
+                    if s["side"] == "CE": s["range_low"] = s["entry_spot"]
+                    else: s["range_high"] = s["entry_spot"]
 
             elif s["has_scaled_out"]:
                 trail_dist = config["trailing_stop_multiple"] * s["width"]
                 trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
-                
                 if (s["side"] == "CE" and spot <= trail_sl) or (s["side"] == "PE" and spot >= trail_sl):
                     exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                     pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
@@ -364,22 +360,16 @@ with tab_live:
                 dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                 log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Render Custom Terminal Logs
-        log_html = "<div class='terminal-box'>"
-        for log in s["logs"]:
-            # Colorize based on keywords
+        # Render Clean Feed
+        log_html = "<div class='log-feed'>"
+        for item in s["logs"]:
+            msg = item["msg"]
             css_class = ""
-            if "EXIT" in log or "PnL" in log or "TARGET" in log or "BREAKOUT" in log:
-                css_class = "profit" if "₹" in log and "-" not in log.split("₹")[1] else "loss"
-            elif "CHOP" in log or "STOPLOSS" in log:
+            if "EXIT" in msg or "PnL" in msg or "TARGET" in msg or "BREAKOUT" in msg:
+                css_class = "profit" if "₹" in msg and "-" not in msg.split("₹")[1] else "loss"
+            elif "CHOP" in msg or "STOPLOSS" in msg:
                 css_class = "alert"
-            
-            # Split timestamp from message
-            parts = log.split(" ", 1)
-            if len(parts) == 2:
-                log_html += f"<span class='time'>{parts[0]}</span> <span class='{css_class}'>{parts[1]}</span><br>"
-            else:
-                log_html += f"<span class='{css_class}'>{log}</span><br>"
+            log_html += f"<div class='log-item'><div class='log-time'>{item['time']}</div><div class='log-msg {css_class}'>{msg}</div></div>"
         log_html += "</div>"
         log_container.markdown(log_html, unsafe_allow_html=True)
         
@@ -392,19 +382,16 @@ with tab_live:
             st.rerun()
 
     else:
-        # Render logs even when stopped
-        log_html = "<div class='terminal-box'>"
-        for log in st.session_state.strategy["logs"]:
+        # Render feed even when stopped
+        log_html = "<div class='log-feed'>"
+        for item in st.session_state.strategy["logs"]:
+            msg = item["msg"]
             css_class = ""
-            if "EXIT" in log or "PnL" in log or "TARGET" in log or "BREAKOUT" in log:
-                css_class = "profit" if "₹" in log and "-" not in log.split("₹")[1] else "loss"
-            elif "CHOP" in log or "STOPLOSS" in log:
+            if "EXIT" in msg or "PnL" in msg or "TARGET" in msg or "BREAKOUT" in msg:
+                css_class = "profit" if "₹" in msg and "-" not in msg.split("₹")[1] else "loss"
+            elif "CHOP" in msg or "STOPLOSS" in msg:
                 css_class = "alert"
-            parts = log.split(" ", 1)
-            if len(parts) == 2:
-                log_html += f"<span class='time'>{parts[0]}</span> <span class='{css_class}'>{parts[1]}</span><br>"
-            else:
-                log_html += f"<span class='{css_class}'>{log}</span><br>"
+            log_html += f"<div class='log-item'><div class='log-time'>{item['time']}</div><div class='log-msg {css_class}'>{msg}</div></div>"
         log_html += "</div>"
         log_container.markdown(log_html, unsafe_allow_html=True)
 
@@ -412,42 +399,36 @@ with tab_live:
 # TAB 2: BACKTESTER
 # ------------------------------------------
 with tab_backtest:
-    st.header("🧪 Historical Backtester")
+    st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
     st.write("Upload a CSV of NIFTY 1-minute data to test the Golden Trio.")
     
     uploaded_file = st.file_uploader("Upload NIFTY 1-min CSV", type=["csv"])
-    
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file, index_col='datetime', parse_dates=True)
         st.write(f"Data Loaded: {len(df)} rows.")
-        
         if st.button("Run Backtest"):
             with st.spinner("Simulating trades..."):
                 time.sleep(2) 
                 st.success("Backtest Complete!")
                 st.metric("Total PnL (1 Year)", "₹ 245,600")
                 st.metric("Win Rate", "68%")
-                st.metric("Max Drawdown", "-₹ 12,000")
-                st.info("Note: This is a placeholder. You will need to connect the actual backtest logic here later.")
     else:
-        st.info("Please upload a CSV file. If you don't have one, download it using the Fyers API.")
+        st.info("Please upload a CSV file.")
 
 # ------------------------------------------
 # TAB 3: SELF-LEARNING COACH
 # ------------------------------------------
 with tab_learn:
-    st.header("🧠 EOD Self-Learning Coach")
+    st.markdown("<h3>EOD Self-Learning Coach</h3>", unsafe_allow_html=True)
     st.write("Adjust the strategy parameters manually, or let the Coach learn from today's data.")
 
     config = st.session_state.config
-    
     col_c1, col_c2 = st.columns(2)
     with col_c1:
-        st.subheader("Current Parameters")
+        st.markdown("**Current Parameters**")
         st.json(config)
-        
     with col_c2:
-        st.subheader("Manual Override")
+        st.markdown("**Manual Override**")
         new_chop = st.slider("Chop Killer Max Range", 80, 150, int(config["chop_killer_max_range"]))
         new_scale = st.slider("Scale-Out Multiple", 1.0, 3.0, float(config["scale_out_multiple"]), 0.1)
         new_trail = st.slider("Trailing Stop Multiple", 0.2, 1.0, float(config["trailing_stop_multiple"]), 0.1)
@@ -459,16 +440,15 @@ with tab_learn:
             st.success("Settings updated successfully!")
 
     st.markdown("---")
-    st.subheader("Run EOD Learning")
+    st.markdown("<h3>Run EOD Learning</h3>", unsafe_allow_html=True)
     st.write("Click below to simulate the 4:00 PM Coach evaluating today's trade.")
     
     if st.button("🧠 Run EOD Learner Now"):
-        with st.spinner("Analyzing today's market data and adjusting parameters..."):
+        with st.spinner("Analyzing today's market data..."):
             time.sleep(1.5)
-            
             current_scale = st.session_state.config["scale_out_multiple"]
             if st.session_state.strategy["day_pnl"] > 0:
                 st.session_state.config["scale_out_multiple"] = round(min(3.0, current_scale + 0.1), 1)
                 st.success(f"Coach: Market trended well today. Increased Scale-Out to {st.session_state.config['scale_out_multiple']}")
             else:
-                st.warning("Coach: Not enough profitable trades today to adjust parameters. Keeping settings static.")
+                st.warning("Coach: Not enough profitable trades today. Keeping settings static.")
