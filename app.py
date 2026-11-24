@@ -64,7 +64,6 @@ st.markdown("""
         overflow: hidden;
         transition: all 0.3s ease;
     }
-    /* Top highlight for 3D effect */
     .glass-card::before {
         content: '';
         position: absolute;
@@ -93,22 +92,17 @@ st.markdown("""
     .val-profit { color: #10B981; text-shadow: 0 0 15px rgba(16,185,129,0.3); }
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
-    .val-purple { color: #A855F7; text-shadow: 0 0 15px rgba(168,85,247,0.3); }
 
     /* 4. IRIDESCENT 3D BUTTONS */
     .stButton>button {
         width: 100%;
-        border-radius: 50px; /* Pill shape from your image */
+        border-radius: 50px;
         font-weight: 600;
         font-size: 15px;
         padding: 12px 0;
         transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
         border: none;
     }
-    
-    /* Start Button - Iridescent Gradient */
     .stButton>button[kind="primary"] {
         background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%);
         color: #FFFFFF;
@@ -118,47 +112,50 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6);
         transform: translateY(-1px);
     }
-
-    /* Stop Button - Dark Glass with Neon Red Glow */
     .stButton>button:not([kind="primary"]):contains("STOP") {
         background: rgba(20, 30, 50, 0.6);
         color: #F43F5E;
         border: 1px solid rgba(244, 63, 94, 0.3);
-        box-shadow: inset 0 0 20px rgba(244, 63, 94, 0.1);
     }
     .stButton>button:not([kind="primary"]):contains("STOP"):hover {
         background: rgba(244, 63, 94, 0.1);
         border-color: rgba(244, 63, 94, 0.8);
-        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4);
     }
-
-    /* Reset Button - Dark Glass */
     .stButton>button:not([kind="primary"]):contains("RESET") {
         background: rgba(255, 255, 255, 0.05);
         color: #A1A1AA;
         border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
-    /* 5. TABS - Glowing Pills */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-        background-color: transparent;
-        border-bottom: none;
+    /* 5. FIXED 3D GLASS TABS */
+    div[data-baseweb="tab-list"] {
+        gap: 15px !important;
+        background-color: transparent !important;
+        border-bottom: none !important;
+        margin-bottom: 20px !important;
     }
-    .stTabs [data-baseweb="tab"] {
-        padding: 10px 24px;
-        color: #A1A1AA;
-        font-weight: 500;
-        border-radius: 50px;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        transition: all 0.2s;
+    button[data-baseweb="tab"] {
+        background-color: rgba(20, 30, 50, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 50px !important;
+        padding: 10px 28px !important;
+        color: #A1A1AA !important;
+        font-weight: 500 !important;
+        transition: all 0.3s ease !important;
     }
-    .stTabs [aria-selected="true"] {
-        background: rgba(255, 255, 255, 0.1);
-        color: #FFFFFF;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        box-shadow: 0 0 15px rgba(255,255,255,0.1);
+    button[data-baseweb="tab"]:hover {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: #FFFFFF !important;
+    }
+    button[aria-selected="true"] {
+        background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), rgba(168, 85, 247, 0.15)) !important;
+        border: 1px solid rgba(255, 255, 255, 0.3) !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 0 15px rgba(168, 85, 247, 0.2) !important;
+    }
+    /* Hide the default underline highlight */
+    .stTabs [data-baseweb="tab-highlight"] {
+        background-color: transparent !important;
     }
 
     /* 6. 3D GLASS LOG CONTAINER */
@@ -175,7 +172,6 @@ st.markdown("""
     .log-container::-webkit-scrollbar { width: 6px; }
     .log-container::-webkit-scrollbar-track { background: transparent; }
     .log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-    
     .log-item {
         padding: 10px 15px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.03);
@@ -259,8 +255,6 @@ tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EO
 # ------------------------------------------
 with tab_live:
     s = st.session_state.strategy
-    
-    # 3D Glass Cards Row
     col1, col2, col3, col4, col5 = st.columns(5)
     
     pnl_class = "val-profit" if s["day_pnl"] > 0 else "val-loss" if s["day_pnl"] < 0 else ""
@@ -280,7 +274,6 @@ with tab_live:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Controls (Note: Start button uses type="primary" to trigger the iridescent CSS)
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
     if col_btn1.button("START ENGINE", use_container_width=True, type="primary"):
         st.session_state.strategy["is_running"] = True
@@ -301,7 +294,6 @@ with tab_live:
     st.markdown("<h3>System Activity</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
-    # --- SIMULATION LOOP ---
     if st.session_state.strategy["is_running"]:
         s = st.session_state.strategy
         config = st.session_state.config
@@ -400,7 +392,6 @@ with tab_live:
                 dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                 log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Render 3D Glass Feed
         log_html = "<div class='log-container'>"
         for item in s["logs"]:
             msg = item["msg"]
@@ -422,7 +413,6 @@ with tab_live:
             st.rerun()
 
     else:
-        # Render feed even when stopped
         log_html = "<div class='log-container'>"
         for item in st.session_state.strategy["logs"]:
             msg = item["msg"]
