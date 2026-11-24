@@ -93,7 +93,7 @@ st.markdown("""
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
 
-    /* 4. IRIDESCENT 3D BUTTONS */
+    /* 4. DYNAMIC BUTTONS */
     .stButton>button {
         width: 100%;
         border-radius: 50px;
@@ -103,6 +103,7 @@ st.markdown("""
         transition: all 0.3s ease;
         border: none;
     }
+    /* Primary Button (START) */
     .stButton>button[kind="primary"] {
         background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%);
         color: #FFFFFF;
@@ -112,19 +113,17 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6);
         transform: translateY(-1px);
     }
-    .stButton>button:not([kind="primary"]):contains("STOP") {
+    
+    /* Secondary Button (STOP) */
+    .stButton>button[kind="secondary"] {
         background: rgba(20, 30, 50, 0.6);
         color: #F43F5E;
         border: 1px solid rgba(244, 63, 94, 0.3);
     }
-    .stButton>button:not([kind="primary"]):contains("STOP"):hover {
+    .stButton>button[kind="secondary"]:hover {
         background: rgba(244, 63, 94, 0.1);
         border-color: rgba(244, 63, 94, 0.8);
-    }
-    .stButton>button:not([kind="primary"]):contains("RESET") {
-        background: rgba(255, 255, 255, 0.05);
-        color: #A1A1AA;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4);
     }
 
     /* 5. FIXED 3D GLASS TABS */
@@ -153,10 +152,7 @@ st.markdown("""
         color: #FFFFFF !important;
         box-shadow: 0 0 15px rgba(168, 85, 247, 0.2) !important;
     }
-    /* Hide the default underline highlight */
-    .stTabs [data-baseweb="tab-highlight"] {
-        background-color: transparent !important;
-    }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: transparent !important; }
 
     /* 6. 3D GLASS LOG CONTAINER */
     .log-container {
@@ -274,27 +270,35 @@ with tab_live:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
-    if col_btn1.button("START ENGINE", use_container_width=True, type="primary"):
-        st.session_state.strategy["is_running"] = True
-        log_message("Engine Started. Building 09:30-09:44 Range...")
-    if col_btn2.button("STOP ENGINE", use_container_width=True):
-        st.session_state.strategy["is_running"] = False
-        log_message("Engine Stopped.")
-    if col_btn3.button("RESET DAY", use_container_width=True):
-        st.session_state.strategy = {
-            "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
-            "qty": None, "remaining_qty": None, "side": None, "entry_spot": None,
-            "entry_premium": None, "has_scaled_out": False, "highest_lowest": None,
-            "day_pnl": 0.0, "logs": [], "is_running": False, "tick_count": 0, "sim_time": "09:15"
-        }
-        st.session_state.broker = MockBroker()
-        st.rerun()
+    # --- SINGLE TOGGLE BUTTON LOGIC ---
+    col_btn1, col_btn2 = st.columns([1, 3])
+    with col_btn1:
+        if not s["is_running"]:
+            if st.button("▶ START ENGINE", use_container_width=True, type="primary"):
+                st.session_state.strategy["is_running"] = True
+                log_message("Engine Started. Building 09:30-09:44 Range...")
+                st.rerun()
+        else:
+            if st.button("⏹ STOP ENGINE", use_container_width=True, type="secondary"):
+                st.session_state.strategy["is_running"] = False
+                log_message("Engine Stopped.")
+                st.rerun()
+                
+    with col_btn2:
+        if st.button("🔄 RESET DAY", use_container_width=True):
+            st.session_state.strategy = {
+                "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
+                "qty": None, "remaining_qty": None, "side": None, "entry_spot": None,
+                "entry_premium": None, "has_scaled_out": False, "highest_lowest": None,
+                "day_pnl": 0.0, "logs": [], "is_running": False, "tick_count": 0, "sim_time": "09:15"
+            }
+            st.session_state.broker = MockBroker()
+            st.rerun()
 
     st.markdown("<h3>System Activity</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
-    if st.session_state.strategy["is_running"]:
+    if s["is_running"]:
         s = st.session_state.strategy
         config = st.session_state.config
         s["tick_count"] += 1
