@@ -5,6 +5,8 @@ import time
 import datetime
 import json
 import random
+import os
+from fyers_apiv3 import fyersModel
 
 # ==========================================
 # 1. PAGE CONFIG & 3D GLASSMORPHISM CSS
@@ -23,7 +25,6 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
     }
     
-    /* Hide Streamlit Clutter */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -93,12 +94,37 @@ st.markdown("""
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
 
-    /* 4. CUSTOM PILL TABS */
-    .tab-container {
-        display: flex;
-        gap: 15px;
-        margin-bottom: 25px;
+    /* 4. BUTTONS (Iridescent vs Dark Glass) */
+    .stButton>button {
+        width: 100%;
+        border-radius: 50px !important;
+        font-weight: 600;
+        font-size: 15px;
+        padding: 12px 0;
+        transition: all 0.3s ease;
+        border: none;
     }
+    .stButton>button[kind="primary"] {
+        background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%) !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4) !important;
+    }
+    .stButton>button[kind="primary"]:hover {
+        box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6) !important;
+        transform: translateY(-1px);
+    }
+    .stButton>button[kind="secondary"] {
+        background: rgba(20, 30, 50, 0.6) !important;
+        color: #F43F5E !important;
+        border: 1px solid rgba(244, 63, 94, 0.3) !important;
+    }
+    .stButton>button[kind="secondary"]:hover {
+        background: rgba(244, 63, 94, 0.1) !important;
+        border-color: rgba(244, 63, 94, 0.8) !important;
+        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4) !important;
+    }
+
+    /* 5. CUSTOM PILL TABS */
     .custom-tab {
         padding: 8px 24px;
         border-radius: 50px;
@@ -121,38 +147,6 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.3);
         color: #FFFFFF;
         box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
-    }
-
-    /* 5. BUTTONS */
-    .stButton>button {
-        width: 100%;
-        border-radius: 50px !important;
-        font-weight: 600;
-        font-size: 15px;
-        padding: 12px 0;
-        transition: all 0.3s ease;
-        border: none;
-    }
-    /* Primary Button (START) */
-    .stButton>button[kind="primary"] {
-        background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%) !important;
-        color: #FFFFFF !important;
-        box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4) !important;
-    }
-    .stButton>button[kind="primary"]:hover {
-        box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6) !important;
-        transform: translateY(-1px);
-    }
-    /* Secondary Button (STOP) */
-    .stButton>button[kind="secondary"] {
-        background: rgba(20, 30, 50, 0.6) !important;
-        color: #F43F5E !important;
-        border: 1px solid rgba(244, 63, 94, 0.3) !important;
-    }
-    .stButton>button[kind="secondary"]:hover {
-        background: rgba(244, 63, 94, 0.1) !important;
-        border-color: rgba(244, 63, 94, 0.8) !important;
-        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4) !important;
     }
 
     /* 6. 3D GLASS LOG CONTAINER */
@@ -191,7 +185,242 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONFIGURATION & STATE
+# 2. FYERS BROKER CLASS
+# ==========================================
+class FyersBroker:
+    def __init__(self, client_id, access_token):
+        self.client_id = client_id
+        self.access_token = access_token
+        self.fyers = None
+        self.symbol = "NSE:NIFTY50-INDEX"
+        self.entry_spot = None
+        self.entry_premium = None
+        self.side = None
+        self.last_error = None
+        
+    def connect(self):
+        try:
+            self.fyers = fyersModel.FyersModel(
+                client_id=self.client_id, 
+                token=self.access_token, 
+                is_async=False, 
+                log_path=""
+            )
+            profile = self.fyers.get_profile()
+            if profile.get('s') == 'ok':
+                return True, "Connected successfully"
+            else:
+                return False, f"Auth failed: {profile.get('message', 'Unknown error')}"
+        except Exception as e:
+            return False, str(e)
+    
+    def get_ltp(self):
+        if not self.fyers:
+            return None
+        try:
+            data = {"symbols": self.symbol}
+            response = self.fyers.quotes(data=data)
+            if response.get('s') == 'ok':
+                return response['d'][0]['v']['lp']
+            else:
+                self.last_error = response.get('message', 'Quote failed')
+                return None
+        except Exception as e:
+            self.last_error = str(e)
+            return None
+    
+    def place_order(self, action, qty, side, spot):
+        # PAPER TRADING SIMULATION (no real orders placed)
+        if action == "BUY":
+            self.entry_spot = spot
+            self.side = side
+            self.entry_premium = 150.0 + random.uniform(-3, 3)
+            return round(self.entry_premium, 2)
+        elif action == "SELL":
+            spot_move = spot - self.entry_spot
+            premium_change = (spot_move * 0.5) if self.side == "CE" else (-spot_move * 0.5)
+            exit_premium = self.entry_premium + premium_change + random.uniform(-1, 1)
+            return max(1.0, round(exit_premium, 2))
+
+# ==========================================
+# 3. HISTORICAL DATA FETCHER
+# ==========================================
+def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, resolution="1"):
+    """
+    Fetches 1-minute (or other resolution) historical OHLCV data from Fyers.
+    Handles API's 100-day per-request limit by chunking date ranges.
+    """
+    fyers = fyersModel.FyersModel(
+        client_id=client_id, token=access_token, is_async=False, log_path=""
+    )
+    all_candles = []
+    current_start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+    final_end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+    
+    while current_start <= final_end:
+        chunk_end = min(current_start + datetime.timedelta(days=100), final_end)
+        data = {
+            "symbol": symbol,
+            "resolution": resolution,
+            "date_format": "1",
+            "range_from": current_start.strftime("%Y-%m-%d"),
+            "range_to": chunk_end.strftime("%Y-%m-%d"),
+            "cont_flag": "1"
+        }
+        try:
+            response = fyers.history(data=data)
+            if response.get('s') == 'ok':
+                all_candles.extend(response.get('candles', []))
+            else:
+                st.warning(f"Chunk {current_start} to {chunk_end} failed: {response.get('message', 'Unknown')}")
+        except Exception as e:
+            st.error(f"Request error: {e}")
+        current_start = chunk_end + datetime.timedelta(days=1)
+        time.sleep(0.5)  # Rate limit courtesy
+    
+    if not all_candles:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+    df.set_index('datetime', inplace=True)
+    df.drop(columns=['timestamp'], inplace=True)
+    return df
+
+# ==========================================
+# 4. BACKTESTING ENGINE
+# ==========================================
+def run_backtest(df, config):
+    """
+    Bar-by-bar backtest of the Golden Trio (Chop Killer + Scale-Out + Trailing Stop).
+    Uses spot price as a proxy for option premium (delta ≈ 0.5).
+    Returns a summary dict with PnL, trade count, win rate, and daily results.
+    """
+    BROKERAGE_PER_ORDER = 20  # ₹ per order
+    SLIPPAGE_PER_POINT = 2    # ₹ per point of spot move
+    
+    df = df.between_time('09:15', '15:30').copy()
+    daily_groups = df.groupby(df.index.date)
+    
+    total_pnl = 0.0
+    trades_taken = 0
+    win_days = 0
+    daily_results = []
+    
+    for date, day_data in daily_groups:
+        if len(day_data) < 300:  # Skip truncated days
+            continue
+        
+        # --- 1. Build Opening Range (09:30–09:44) ---
+        orb_data = day_data.between_time('09:30', '09:44')
+        if orb_data.empty:
+            continue
+        range_high = orb_data['high'].max()
+        range_low = orb_data['low'].min()
+        width = range_high - range_low
+        
+        if width <= 5:
+            daily_results.append({"date": str(date), "pnl": 0, "reason": "Range too tight"})
+            continue
+        
+        # --- 2. Chop Killer ---
+        if width > config["chop_killer_max_range"]:
+            daily_results.append({"date": str(date), "pnl": 0, "reason": "Chop Killer (wide range)"})
+            continue
+        
+        # Position sizing
+        qty = max(75, round((config["risk_amount"] / width) / 75) * 75)
+        
+        # --- 3. Look for breakout after 09:44 ---
+        post_orb = day_data.between_time('09:45', '15:30')
+        position = None
+        entry_spot = 0.0
+        entry_premium = 0.0
+        stop_loss = 0.0
+        highest_lowest = 0.0
+        remaining_qty = qty
+        has_scaled_out = False
+        trade_pnl = 0.0
+        
+        for idx, row in post_orb.iterrows():
+            spot = row['close']
+            
+            # Entry logic
+            if position is None:
+                if spot > range_high:
+                    position = "CE"
+                    entry_spot = spot
+                    entry_premium = 150.0  # proxy base premium
+                    stop_loss = range_low
+                    highest_lowest = spot
+                    has_scaled_out = False
+                elif spot < range_low:
+                    position = "PE"
+                    entry_spot = spot
+                    entry_premium = 150.0
+                    stop_loss = range_high
+                    highest_lowest = spot
+                    has_scaled_out = False
+                else:
+                    continue
+            
+            # Track extreme for trailing
+            if position == "CE":
+                highest_lowest = max(highest_lowest, spot)
+            else:
+                highest_lowest = min(highest_lowest, spot)
+            
+            # Stop Loss (spot-based)
+            if (position == "CE" and spot < stop_loss) or (position == "PE" and spot > stop_loss):
+                exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                trade_pnl = (exit_premium - entry_premium) * remaining_qty
+                trade_pnl -= BROKERAGE_PER_ORDER * 2
+                break
+            
+            # Scale-Out
+            if not has_scaled_out:
+                scale_target = entry_spot + (config["scale_out_multiple"] * width) if position == "CE" else entry_spot - (config["scale_out_multiple"] * width)
+                if (position == "CE" and spot >= scale_target) or (position == "PE" and spot <= scale_target):
+                    half_qty = (remaining_qty // 2 // 75) * 75
+                    if half_qty > 0:
+                        exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                        trade_pnl += (exit_premium - entry_premium) * half_qty - BROKERAGE_PER_ORDER
+                        remaining_qty -= half_qty
+                    has_scaled_out = True
+                    stop_loss = entry_spot  # move to break-even
+            
+            # Trailing Stop (after scale-out)
+            elif has_scaled_out:
+                trail_dist = config["trailing_stop_multiple"] * width
+                trail_sl = highest_lowest - trail_dist if position == "CE" else highest_lowest + trail_dist
+                if (position == "CE" and spot <= trail_sl) or (position == "PE" and spot >= trail_sl):
+                    exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                    trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
+                    break
+        
+        # Time exit at 15:30
+        if position is not None and remaining_qty > 0:
+            last_spot = post_orb.iloc[-1]['close']
+            exit_premium = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
+            trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
+        
+        if position is not None:
+            trades_taken += 1
+            total_pnl += trade_pnl
+            if trade_pnl > 0:
+                win_days += 1
+            daily_results.append({"date": str(date), "pnl": round(trade_pnl, 2), "reason": "Trade executed"})
+    
+    win_rate = (win_days / trades_taken * 100) if trades_taken > 0 else 0.0
+    return {
+        "total_pnl": round(total_pnl, 2),
+        "trades_taken": trades_taken,
+        "win_rate": round(win_rate, 2),
+        "daily_results": daily_results
+    }
+
+# ==========================================
+# 5. SESSION STATE INITIALIZATION
 # ==========================================
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "Live Execution"
@@ -202,31 +431,11 @@ if 'config' not in st.session_state:
         "scale_out_multiple": 1.5, "trailing_stop_multiple": 0.5
     }
 
-class MockBroker:
-    def __init__(self):
-        self.price = 22400.0
-        self.entry_spot = None
-        self.entry_premium = None
-        self.side = None
-        
-    def get_ltp(self):
-        self.price += random.uniform(-10, 12) + 0.5
-        return round(self.price, 2)
-        
-    def place_order(self, action, qty, side, spot):
-        if action == "BUY":
-            self.entry_spot = spot
-            self.side = side
-            self.entry_premium = 150.0 + random.uniform(-3, 3) 
-            return round(self.entry_premium, 2)
-        elif action == "SELL":
-            spot_move = spot - self.entry_spot
-            premium_change = (spot_move * 0.5) if self.side == "CE" else (-spot_move * 0.5)
-            exit_premium = self.entry_premium + premium_change + random.uniform(-1, 1)
-            return max(1.0, round(exit_premium, 2))
-
 if 'broker' not in st.session_state:
-    st.session_state.broker = MockBroker()
+    st.session_state.broker = None  # Will be set after Fyers connect
+
+if 'fyers_connected' not in st.session_state:
+    st.session_state.fyers_connected = False
 
 if 'strategy' not in st.session_state:
     st.session_state.strategy = {
@@ -243,12 +452,43 @@ def log_message(msg):
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
-# 3. UI LAYOUT & CUSTOM TABS
+# 6. UI HEADER & FYERS CONNECTION
 # ==========================================
 st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
 
-# Custom Tab Navigation using Buttons
+# Fyers connection panel
+with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyers_connected):
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        fyers_client_id = st.text_input("Client ID", value="", placeholder="XC4XXXXM-100")
+    with col_f2:
+        fyers_access_token = st.text_input("Access Token", value="", type="password", placeholder="eyJ0eX...")
+    
+    col_conn1, col_conn2 = st.columns([1, 3])
+    with col_conn1:
+        if st.button("Connect Fyers", type="primary", use_container_width=True):
+            if fyers_client_id and fyers_access_token:
+                broker = FyersBroker(fyers_client_id, fyers_access_token)
+                success, message = broker.connect()
+                if success:
+                    st.session_state.broker = broker
+                    st.session_state.fyers_connected = True
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(f"Connection failed: {message}")
+            else:
+                st.warning("Please enter both Client ID and Access Token.")
+    with col_conn2:
+        if st.session_state.fyers_connected:
+            st.success("✅ Connected to Fyers (Paper Trading Mode)")
+        else:
+            st.info("Not connected. Enter credentials above to enable live paper trading.")
+
+# ==========================================
+# 7. CUSTOM TAB NAVIGATION
+# ==========================================
 col_t1, col_t2, col_t3, _ = st.columns([1, 1, 1, 3])
 with col_t1:
     if st.button("Live Execution", use_container_width=True, type="primary" if st.session_state.active_tab == "Live Execution" else "secondary"):
@@ -265,9 +505,9 @@ with col_t3:
 
 st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
-# ------------------------------------------
-# TAB CONTENT: LIVE EXECUTION
-# ------------------------------------------
+# ==========================================
+# 8. TAB CONTENT: LIVE EXECUTION
+# ==========================================
 if st.session_state.active_tab == "Live Execution":
     s = st.session_state.strategy
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -289,19 +529,22 @@ if st.session_state.active_tab == "Live Execution":
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- SINGLE TOGGLE BUTTON ---
+    # Toggle Engine Button
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
         btn_label = "⏹ STOP ENGINE" if s["is_running"] else "▶ START ENGINE"
         btn_type = "secondary" if s["is_running"] else "primary"
         
         if st.button(btn_label, use_container_width=True, type=btn_type):
-            st.session_state.strategy["is_running"] = not st.session_state.strategy["is_running"]
-            if st.session_state.strategy["is_running"]:
-                log_message("Engine Started. Building 09:30-09:44 Range...")
+            if not st.session_state.fyers_connected:
+                st.error("Please connect to Fyers first.")
             else:
-                log_message("Engine Stopped.")
-            st.rerun()
+                st.session_state.strategy["is_running"] = not st.session_state.strategy["is_running"]
+                if st.session_state.strategy["is_running"]:
+                    log_message("Engine Started. Fetching live Fyers data...")
+                else:
+                    log_message("Engine Stopped.")
+                st.rerun()
                 
     with col_btn2:
         if st.button("🔄 RESET DAY", use_container_width=True):
@@ -311,109 +554,117 @@ if st.session_state.active_tab == "Live Execution":
                 "entry_premium": None, "has_scaled_out": False, "highest_lowest": None,
                 "day_pnl": 0.0, "logs": [], "is_running": False, "tick_count": 0, "sim_time": "09:15"
             }
-            st.session_state.broker = MockBroker()
             st.rerun()
 
     st.markdown("<h3>System Activity</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
-    if s["is_running"]:
+    # Live execution loop
+    if s["is_running"] and st.session_state.fyers_connected:
+        broker = st.session_state.broker
         config = st.session_state.config
         s["tick_count"] += 1
         
+        # Simulated time for testing (can replace with real clock)
         sim_minute = 15 + s["tick_count"]
         hour = 9 + (sim_minute // 60)
         minute = sim_minute % 60
         s["sim_time"] = f"{hour:02d}:{minute:02d}"
 
-        spot = st.session_state.broker.get_ltp()
-
-        if s["state"] == "WAIT_RANGE":
-            if s["sim_time"] < "09:30":
-                log_message(f"Pre-market. Spot: {spot}")
-            else:
-                if s["range_high"] is None:
-                    s["range_high"] = s["range_low"] = spot
-                    log_message(f"Started building range at {spot}")
+        spot = broker.get_ltp()
+        if spot is None:
+            log_message("⚠️ Fyers quote failed. Check token/connection.")
+        else:
+            if s["state"] == "WAIT_RANGE":
+                if s["sim_time"] < "09:30":
+                    log_message(f"Pre-market. Spot: {spot}")
                 else:
-                    s["range_high"] = max(s["range_high"], spot)
-                    s["range_low"] = min(s["range_low"], spot)
-                    log_message(f"Building Range... High: {s['range_high']} | Low: {s['range_low']}")
-                
-                if s["sim_time"] == "09:44":
-                    s["width"] = s["range_high"] - s["range_low"]
-                    if s["width"] > config["chop_killer_max_range"]:
-                        s["state"] = "DONE"
-                        log_message(f"CHOP KILLER: Width {s['width']:.1f} > {config['chop_killer_max_range']}. Skipping day.")
-                    elif s["width"] <= 5:
-                        s["state"] = "DONE"
-                        log_message(f"Range too tight ({s['width']:.1f}). Skipping day.")
+                    if s["range_high"] is None:
+                        s["range_high"] = s["range_low"] = spot
+                        log_message(f"Started building range at {spot}")
                     else:
-                        s["qty"] = s["remaining_qty"] = max(75, round((config["risk_amount"] / s["width"]) / 75) * 75)
-                        s["state"] = "ARMED"
-                        log_message(f"Range Locked: {s['range_low']} - {s['range_high']} | Qty: {s['qty']}. Armed.")
+                        s["range_high"] = max(s["range_high"], spot)
+                        s["range_low"] = min(s["range_low"], spot)
+                        log_message(f"Building Range... High: {s['range_high']} | Low: {s['range_low']}")
+                    
+                    if s["sim_time"] == "09:44":
+                        s["width"] = s["range_high"] - s["range_low"]
+                        if s["width"] > config["chop_killer_max_range"]:
+                            s["state"] = "DONE"
+                            log_message(f"CHOP KILLER: Width {s['width']:.1f} > {config['chop_killer_max_range']}. Skipping day.")
+                        elif s["width"] <= 5:
+                            s["state"] = "DONE"
+                            log_message(f"Range too tight ({s['width']:.1f}). Skipping day.")
+                        else:
+                            s["qty"] = s["remaining_qty"] = max(75, round((config["risk_amount"] / s["width"]) / 75) * 75)
+                            s["state"] = "ARMED"
+                            log_message(f"Range Locked: {s['range_low']} - {s['range_high']} | Qty: {s['qty']}. Armed.")
 
-        elif s["state"] == "ARMED":
-            if spot > s["range_high"]:
-                s["side"] = "CE"
-                s["entry_spot"] = spot
-                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"], "CE", spot)
-                s["highest_lowest"] = spot
-                s["state"] = "IN_TRADE"
-                log_message(f"🚀 BREAKOUT! ENTER CE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
-            elif spot < s["range_low"]:
-                s["side"] = "PE"
-                s["entry_spot"] = spot
-                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"], "PE", spot)
-                s["highest_lowest"] = spot
-                s["state"] = "IN_TRADE"
-                log_message(f"🔻 BREAKDOWN! ENTER PE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
-            else:
-                log_message(f"Armed. Spot: {spot} | Waiting for breakout...")
+            elif s["state"] == "ARMED":
+                if spot > s["range_high"]:
+                    s["side"] = "CE"
+                    s["entry_spot"] = spot
+                    s["entry_premium"] = broker.place_order("BUY", s["qty"], "CE", spot)
+                    s["highest_lowest"] = spot
+                    s["state"] = "IN_TRADE"
+                    log_message(f"🚀 BREAKOUT! ENTER CE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
+                elif spot < s["range_low"]:
+                    s["side"] = "PE"
+                    s["entry_spot"] = spot
+                    s["entry_premium"] = broker.place_order("BUY", s["qty"], "PE", spot)
+                    s["highest_lowest"] = spot
+                    s["state"] = "IN_TRADE"
+                    log_message(f"🔻 BREAKDOWN! ENTER PE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
+                else:
+                    log_message(f"Armed. Spot: {spot} | Waiting for breakout...")
 
-        elif s["state"] == "IN_TRADE":
-            if s["side"] == "CE":
-                s["highest_lowest"] = max(s["highest_lowest"], spot)
-            else:
-                s["highest_lowest"] = min(s["highest_lowest"], spot)
+            elif s["state"] == "IN_TRADE":
+                if s["side"] == "CE":
+                    s["highest_lowest"] = max(s["highest_lowest"], spot)
+                else:
+                    s["highest_lowest"] = min(s["highest_lowest"], spot)
 
-            if (s["side"] == "CE" and spot < s["range_low"]) or (s["side"] == "PE" and spot > s["range_high"]):
-                exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
-                pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
-                s["day_pnl"] += pnl
-                s["state"] = "DONE"
-                log_message(f"❌ STOPLOSS HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
-
-            elif not s["has_scaled_out"]:
-                scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
-                if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
-                    half_qty = (s["remaining_qty"] // 2 // 75) * 75
-                    if half_qty > 0:
-                        exit_prem = st.session_state.broker.place_order("SELL", half_qty, s["side"], spot)
-                        pnl = (exit_prem - s["entry_premium"]) * half_qty if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * half_qty
-                        s["day_pnl"] += pnl
-                        s["remaining_qty"] -= half_qty
-                        log_message(f"💰 SCALE OUT! Sold {half_qty} at {exit_prem} | PnL: ₹{pnl:.2f} | SL moved to B/E.")
-                    else:
-                        log_message(f"🎯 TARGET HIT, but only 1 lot. Holding for trailing stop.")
-                    s["has_scaled_out"] = True
-                    if s["side"] == "CE": s["range_low"] = s["entry_spot"]
-                    else: s["range_high"] = s["entry_spot"]
-
-            elif s["has_scaled_out"]:
-                trail_dist = config["trailing_stop_multiple"] * s["width"]
-                trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
-                if (s["side"] == "CE" and spot <= trail_sl) or (s["side"] == "PE" and spot >= trail_sl):
-                    exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
+                # Stop Loss
+                if (s["side"] == "CE" and spot < s["range_low"]) or (s["side"] == "PE" and spot > s["range_high"]):
+                    exit_prem = broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                     pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
                     s["day_pnl"] += pnl
                     s["state"] = "DONE"
-                    log_message(f"🎯 TRAILING STOP HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
+                    log_message(f"❌ STOPLOSS HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
 
-            if s["state"] == "IN_TRADE":
-                dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
-                log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
+                # Scale-Out
+                elif not s["has_scaled_out"]:
+                    scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
+                    if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
+                        half_qty = (s["remaining_qty"] // 2 // 75) * 75
+                        if half_qty > 0:
+                            exit_prem = broker.place_order("SELL", half_qty, s["side"], spot)
+                            pnl = (exit_prem - s["entry_premium"]) * half_qty if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * half_qty
+                            s["day_pnl"] += pnl
+                            s["remaining_qty"] -= half_qty
+                            log_message(f"💰 SCALE OUT! Sold {half_qty} at {exit_prem} | PnL: ₹{pnl:.2f} | SL moved to B/E.")
+                        else:
+                            log_message(f"🎯 TARGET HIT, but only 1 lot. Holding for trailing stop.")
+                        s["has_scaled_out"] = True
+                        if s["side"] == "CE": s["range_low"] = s["entry_spot"]
+                        else: s["range_high"] = s["entry_spot"]
 
+                # Trailing Stop
+                elif s["has_scaled_out"]:
+                    trail_dist = config["trailing_stop_multiple"] * s["width"]
+                    trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
+                    if (s["side"] == "CE" and spot <= trail_sl) or (s["side"] == "PE" and spot >= trail_sl):
+                        exit_prem = broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
+                        pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
+                        s["day_pnl"] += pnl
+                        s["state"] = "DONE"
+                        log_message(f"🎯 TRAILING STOP HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
+
+                if s["state"] == "IN_TRADE":
+                    dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
+                    log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
+
+        # Render logs
         log_html = "<div class='log-container'>"
         for item in s["logs"]:
             msg = item["msg"]
@@ -427,7 +678,7 @@ if st.session_state.active_tab == "Live Execution":
         log_container.markdown(log_html, unsafe_allow_html=True)
         
         if s["is_running"] and s["state"] != "DONE":
-            time.sleep(1.0)
+            time.sleep(2)  # Poll every 2 seconds (API rate limit friendly)
             st.rerun()
         elif s["is_running"] and s["state"] == "DONE":
             log_message("--- TRADING DAY COMPLETE ---")
@@ -435,6 +686,7 @@ if st.session_state.active_tab == "Live Execution":
             st.rerun()
 
     else:
+        # Render static logs when stopped
         log_html = "<div class='log-container'>"
         for item in st.session_state.strategy["logs"]:
             msg = item["msg"]
@@ -447,9 +699,9 @@ if st.session_state.active_tab == "Live Execution":
         log_html += "</div>"
         log_container.markdown(log_html, unsafe_allow_html=True)
 
-# ------------------------------------------
-# TAB CONTENT: BACKTESTER
-# ------------------------------------------
+# ==========================================
+# 9. TAB CONTENT: BACKTESTER
+# ==========================================
 elif st.session_state.active_tab == "Backtester":
     st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
     st.write("Upload a CSV of NIFTY 1-minute data to test the Golden Trio.")
@@ -458,18 +710,67 @@ elif st.session_state.active_tab == "Backtester":
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file, index_col='datetime', parse_dates=True)
         st.write(f"Data Loaded: {len(df)} rows.")
+        
         if st.button("Run Backtest", type="primary"):
             with st.spinner("Simulating trades..."):
-                time.sleep(2) 
+                results = run_backtest(df, st.session_state.config)
                 st.success("Backtest Complete!")
-                st.metric("Total PnL (1 Year)", "₹ 245,600")
-                st.metric("Win Rate", "68%")
+                
+                col_r1, col_r2, col_r3 = st.columns(3)
+                col_r1.metric("Total PnL", f"₹{results['total_pnl']:.2f}")
+                col_r2.metric("Trades Taken", results['trades_taken'])
+                col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
+                
+                if results['daily_results']:
+                    st.subheader("Daily Breakdown")
+                    st.dataframe(pd.DataFrame(results['daily_results']), use_container_width=True)
     else:
-        st.info("Please upload a CSV file.")
+        st.info("Please upload a CSV file. Use the Fyers data fetcher below to download one.")
 
-# ------------------------------------------
-# TAB CONTENT: SELF-LEARNING COACH
-# ------------------------------------------
+    # --- Fyers Historical Data Fetcher ---
+    st.markdown("---")
+    st.subheader("📥 Fetch Data from Fyers")
+    
+    if st.session_state.fyers_connected:
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            fetch_symbol = st.text_input("Symbol", value="NSE:NIFTY50-INDEX")
+        with col_d2:
+            fetch_resolution = st.selectbox("Resolution", ["1", "5", "15", "60"])
+        
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            start_date = st.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=30))
+        with col_date2:
+            end_date = st.date_input("End Date", datetime.date.today())
+        
+        if st.button("Fetch & Save CSV", type="secondary"):
+            with st.spinner("Fetching historical data from Fyers..."):
+                df_hist = fetch_fyers_history(
+                    st.session_state.broker.client_id,
+                    st.session_state.broker.access_token,
+                    fetch_symbol,
+                    start_date.strftime("%Y-%m-%d"),
+                    end_date.strftime("%Y-%m-%d"),
+                    fetch_resolution
+                )
+                if not df_hist.empty:
+                    csv = df_hist.to_csv(index=True)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"{fetch_symbol.replace(':', '_')}_{fetch_resolution}min.csv",
+                        mime="text/csv"
+                    )
+                    st.success(f"Fetched {len(df_hist)} candles. Click above to download.")
+                else:
+                    st.error("No data returned. Check symbol, date range, and token validity.")
+    else:
+        st.info("Connect to Fyers above to fetch historical data directly.")
+
+# ==========================================
+# 10. TAB CONTENT: EOD LEARNER
+# ==========================================
 elif st.session_state.active_tab == "EOD Learner":
     st.markdown("<h3>EOD Self-Learning Coach</h3>", unsafe_allow_html=True)
     st.write("Adjust the strategy parameters manually, or let the Coach learn from today's data.")
