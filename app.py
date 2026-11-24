@@ -93,40 +93,41 @@ st.markdown("""
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
 
-    /* 4. DYNAMIC BUTTONS */
+    /* 4. BUTTONS (Iridescent vs Dark Glass) */
     .stButton>button {
         width: 100%;
-        border-radius: 50px;
+        border-radius: 50px !important;
         font-weight: 600;
         font-size: 15px;
         padding: 12px 0;
         transition: all 0.3s ease;
         border: none;
     }
+    
     /* Primary Button (START) */
     .stButton>button[kind="primary"] {
-        background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%);
-        color: #FFFFFF;
-        box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4);
+        background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%) !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4) !important;
     }
     .stButton>button[kind="primary"]:hover {
-        box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6);
+        box-shadow: 0 6px 20px rgba(255, 126, 179, 0.6) !important;
         transform: translateY(-1px);
     }
     
     /* Secondary Button (STOP) */
     .stButton>button[kind="secondary"] {
-        background: rgba(20, 30, 50, 0.6);
-        color: #F43F5E;
-        border: 1px solid rgba(244, 63, 94, 0.3);
+        background: rgba(20, 30, 50, 0.6) !important;
+        color: #F43F5E !important;
+        border: 1px solid rgba(244, 63, 94, 0.3) !important;
     }
     .stButton>button[kind="secondary"]:hover {
-        background: rgba(244, 63, 94, 0.1);
-        border-color: rgba(244, 63, 94, 0.8);
-        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4);
+        background: rgba(244, 63, 94, 0.1) !important;
+        border-color: rgba(244, 63, 94, 0.8) !important;
+        box-shadow: 0 0 15px rgba(244, 63, 94, 0.4) !important;
     }
 
-    /* 5. FIXED 3D GLASS TABS */
+    /* 5. PILL TABS (Force Override) */
     div[data-baseweb="tab-list"] {
         gap: 15px !important;
         background-color: transparent !important;
@@ -152,7 +153,13 @@ st.markdown("""
         color: #FFFFFF !important;
         box-shadow: 0 0 15px rgba(168, 85, 247, 0.2) !important;
     }
-    .stTabs [data-baseweb="tab-highlight"] { background-color: transparent !important; }
+    /* Hide default red underline */
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none !important;
+    }
+    .stTabs [data-baseweb="tab-border"] {
+        display: none !important;
+    }
 
     /* 6. 3D GLASS LOG CONTAINER */
     .log-container {
@@ -271,18 +278,18 @@ with tab_live:
     st.markdown("<br>", unsafe_allow_html=True)
     
     # --- SINGLE TOGGLE BUTTON LOGIC ---
-    col_btn1, col_btn2 = st.columns([1, 3])
+    col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
-        if not s["is_running"]:
-            if st.button("▶ START ENGINE", use_container_width=True, type="primary"):
-                st.session_state.strategy["is_running"] = True
+        btn_label = "⏹ STOP ENGINE" if s["is_running"] else "▶ START ENGINE"
+        btn_type = "secondary" if s["is_running"] else "primary"
+        
+        if st.button(btn_label, use_container_width=True, type=btn_type):
+            st.session_state.strategy["is_running"] = not st.session_state.strategy["is_running"]
+            if st.session_state.strategy["is_running"]:
                 log_message("Engine Started. Building 09:30-09:44 Range...")
-                st.rerun()
-        else:
-            if st.button("⏹ STOP ENGINE", use_container_width=True, type="secondary"):
-                st.session_state.strategy["is_running"] = False
+            else:
                 log_message("Engine Stopped.")
-                st.rerun()
+            st.rerun()
                 
     with col_btn2:
         if st.button("🔄 RESET DAY", use_container_width=True):
