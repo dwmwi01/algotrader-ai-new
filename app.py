@@ -7,152 +7,172 @@ import json
 import random
 
 # ==========================================
-# 1. PAGE CONFIG & MINIMALIST FINTECH CSS
+# 1. PAGE CONFIG & MODERN DARK SAAS CSS
 # ==========================================
-st.set_page_config(page_title="Hermes Trading", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Hermes OS", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    /* Global Background & Font */
+    /* 1. GLOBAL SETTINGS */
     [data-testid="stAppViewContainer"] {
-        background-color: #F8F9FA;
-        color: #1E293B;
+        background-color: #09090B; /* Very dark, almost black background */
+        color: #FAFAFA;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     
-    /* Hide Streamlit Branding for a clean look */
+    /* Hide Streamlit default clutter */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
-    /* Typography */
+    /* 2. TYPOGRAPHY */
     h1 {
-        font-weight: 800;
-        color: #0F172A;
-        letter-spacing: -1px;
-        margin-bottom: 0px;
-        padding-bottom: 0px;
+        font-weight: 700;
+        font-size: 32px;
+        letter-spacing: -0.05em;
+        color: #FFFFFF;
+        margin-bottom: 5px;
     }
-    h2, h3 {
+    h3 {
         font-weight: 600;
-        color: #334155;
+        font-size: 18px;
+        color: #E4E4E7;
+        margin-top: 25px;
+        margin-bottom: 15px;
     }
     .subtitle {
-        color: #64748B;
-        font-size: 16px;
-        margin-top: 0px;
+        color: #A1A1AA;
+        font-size: 15px;
         margin-bottom: 30px;
     }
 
-    /* Modern Metric Cards */
-    .card {
-        background-color: #FFFFFF;
+    /* 3. MODERN CARDS */
+    .metric-card {
+        background: #18181B; /* Dark grey card */
+        border: 1px solid #27272A; /* Subtle border */
         border-radius: 16px;
-        padding: 24px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-        border: 1px solid #E2E8F0;
-        text-align: left;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
     }
-    .card:hover {
+    .metric-card:hover {
+        border-color: #3F3F46;
         transform: translateY(-2px);
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
     }
     .card-label {
         font-size: 13px;
-        font-weight: 600;
-        color: #64748B;
-        text-transform: uppercase;
+        font-weight: 500;
+        color: #A1A1AA;
         letter-spacing: 0.5px;
-        margin-bottom: 8px;
+        text-transform: uppercase;
     }
     .card-value {
-        font-size: 28px;
+        font-size: 26px;
         font-weight: 700;
-        color: #0F172A;
+        color: #FFFFFF;
     }
-    .value-profit { color: #10B981; }
-    .value-loss { color: #EF4444; }
-    .value-blue { color: #3B82F6; }
+    .val-profit { color: #10B981; } /* Soft Neon Green */
+    .val-loss { color: #F43F5E; }   /* Soft Neon Red */
+    .val-blue { color: #3B82F6; }   /* Primary Blue */
+    .val-purple { color: #A855F7; } /* For AI */
 
-    /* Activity Feed Log */
-    .log-feed {
-        background-color: #FFFFFF;
+    /* 4. LOGS / ACTIVITY FEED */
+    .log-container {
+        background: #18181B;
+        border: 1px solid #27272A;
         border-radius: 16px;
-        border: 1px solid #E2E8F0;
-        padding: 20px;
-        height: 400px;
+        padding: 10px;
+        height: 450px;
         overflow-y: auto;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
     }
+    /* Custom Scrollbar */
+    .log-container::-webkit-scrollbar { width: 8px; }
+    .log-container::-webkit-scrollbar-track { background: #18181B; border-radius: 8px; }
+    .log-container::-webkit-scrollbar-thumb { background: #3F3F46; border-radius: 8px; }
+    .log-container::-webkit-scrollbar-thumb:hover { background: #52525B; }
+
     .log-item {
-        padding: 8px 12px;
-        border-bottom: 1px solid #F1F5F9;
+        padding: 12px 16px;
+        border-bottom: 1px solid #27272A;
         font-size: 14px;
         display: flex;
-        align-items: center;
+        gap: 15px;
+        align-items: flex-start;
     }
     .log-item:last-child { border-bottom: none; }
     .log-time {
-        color: #94A3B8;
+        color: #71717A;
+        font-family: 'Courier New', Courier, monospace;
         font-size: 12px;
-        font-weight: 500;
-        min-width: 80px;
+        min-width: 65px;
+        padding-top: 2px;
     }
-    .log-msg { color: #334155; }
-    .log-msg.profit { color: #10B981; font-weight: 600; }
-    .log-msg.loss { color: #EF4444; font-weight: 600; }
-    .log-msg.alert { color: #F59E0B; font-weight: 600; }
-
-    /* Buttons */
+    .log-msg { color: #D4D4D8; line-height: 1.4; }
+    .log-msg.profit { color: #10B981; font-weight: 500; }
+    .log-msg.loss { color: #F43F5E; font-weight: 500; }
+    .log-msg.alert { color: #F59E0B; font-weight: 500; }
+    
+    /* 5. BUTTONS */
     .stButton>button {
         width: 100%;
         border-radius: 10px;
         font-weight: 600;
+        font-size: 14px;
         padding: 10px 0;
-        border: none;
-        transition: all 0.2s;
+        transition: all 0.2s ease;
+        border: 1px solid transparent;
     }
-    /* Primary Button (Start) */
+    /* Start Button */
     .stButton>button:contains("START ENGINE") {
-        background-color: #0F172A;
-        color: #FFFFFF;
+        background-color: #FAFAFA;
+        color: #09090B;
     }
     .stButton>button:contains("START ENGINE"):hover {
-        background-color: #1E293B;
-        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
+        background-color: #E4E4E7;
+        box-shadow: 0 0 15px rgba(255, 255, 255, 0.1);
     }
     /* Stop Button */
     .stButton>button:contains("STOP ENGINE") {
-        background-color: #FFFFFF;
-        color: #EF4444;
-        border: 1px solid #EF4444;
+        background-color: transparent;
+        color: #F43F5E;
+        border: 1px solid #F43F5E;
     }
     .stButton>button:contains("STOP ENGINE"):hover {
-        background-color: #FEF2F2;
+        background-color: rgba(244, 63, 94, 0.1);
     }
     /* Reset Button */
     .stButton>button:contains("RESET DAY") {
-        background-color: #F1F5F9;
-        color: #475569;
+        background-color: #27272A;
+        color: #FAFAFA;
+        border: 1px solid #3F3F46;
+    }
+    .stButton>button:contains("RESET DAY"):hover {
+        background-color: #3F3F46;
     }
 
-    /* Tabs */
+    /* 6. TABS */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 30px;
-        background-color: transparent;
-        border-bottom: 1px solid #E2E8F0;
+        gap: 10px;
+        background-color: #18181B;
+        padding: 5px;
+        border-radius: 12px;
+        border: 1px solid #27272A;
     }
     .stTabs [data-baseweb="tab"] {
-        padding: 10px 0px;
-        color: #64748B;
-        font-weight: 600;
+        padding: 8px 16px;
+        color: #A1A1AA;
+        font-weight: 500;
+        border-radius: 8px;
         background-color: transparent;
-        border-bottom: 2px solid transparent;
     }
     .stTabs [aria-selected="true"] {
-        color: #0F172A;
-        border-bottom: 2px solid #0F172A;
+        background-color: #27272A;
+        color: #FFFFFF;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -209,8 +229,8 @@ def log_message(msg):
 # ==========================================
 # 3. UI LAYOUT
 # ==========================================
-st.markdown("<h1>Overview</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Monitor your algorithmic execution and portfolio performance.</p>", unsafe_allow_html=True)
+st.markdown("<h1>Hermes OS</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Algorithmic Execution & Portfolio Management</p>", unsafe_allow_html=True)
 
 tab_live, tab_backtest, tab_learn = st.tabs(["Live Execution", "Backtester", "EOD Learner"])
 
@@ -223,20 +243,20 @@ with tab_live:
     # Metric Cards Row
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    pnl_class = "value-profit" if s["day_pnl"] > 0 else "value-loss" if s["day_pnl"] < 0 else ""
+    pnl_class = "val-profit" if s["day_pnl"] > 0 else "val-loss" if s["day_pnl"] < 0 else ""
     
     with col1:
-        st.markdown(f'<div class="card"><div class="card-label">Engine State</div><div class="card-value value-blue">{s["state"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="card-label">Engine State</div><div class="card-value val-blue">{s["state"]}</div></div>', unsafe_allow_html=True)
     with col2:
         range_text = f"{s['range_low']} - {s['range_high']}" if s['range_high'] else "Waiting"
-        st.markdown(f'<div class="card"><div class="card-label">ORB Range</div><div class="card-value" style="font-size: 20px;">{range_text}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="card-label">ORB Range</div><div class="card-value" style="font-size: 20px;">{range_text}</div></div>', unsafe_allow_html=True)
     with col3:
         qty_text = s["remaining_qty"] if s["remaining_qty"] else "--"
-        st.markdown(f'<div class="card"><div class="card-label">Active Qty</div><div class="card-value">{qty_text}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="card-label">Active Qty</div><div class="card-value">{qty_text}</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f'<div class="card"><div class="card-label">Day P&L</div><div class="card-value {pnl_class}">₹{s["day_pnl"]:.2f}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="card-label">Day P&L</div><div class="card-value {pnl_class}">₹{s["day_pnl"]:.2f}</div></div>', unsafe_allow_html=True)
     with col5:
-        st.markdown(f'<div class="card"><div class="card-label">Simulated Time</div><div class="card-value">{s["sim_time"]}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="card-label">Sim Time</div><div class="card-value">{s["sim_time"]}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -258,7 +278,7 @@ with tab_live:
         st.session_state.broker = MockBroker()
         st.rerun()
 
-    st.markdown("<h3>Activity Feed</h3>", unsafe_allow_html=True)
+    st.markdown("<h3>System Activity</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
     # --- SIMULATION LOOP ---
@@ -360,8 +380,8 @@ with tab_live:
                 dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                 log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Render Clean Feed
-        log_html = "<div class='log-feed'>"
+        # Render Activity Feed
+        log_html = "<div class='log-container'>"
         for item in s["logs"]:
             msg = item["msg"]
             css_class = ""
@@ -383,7 +403,7 @@ with tab_live:
 
     else:
         # Render feed even when stopped
-        log_html = "<div class='log-feed'>"
+        log_html = "<div class='log-container'>"
         for item in st.session_state.strategy["logs"]:
             msg = item["msg"]
             css_class = ""
