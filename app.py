@@ -185,11 +185,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FYERS OAUTH 2.0 CONFIGURATION (YOUR CREDENTIALS)
+# 2. FYERS OAUTH 2.0 CONFIGURATION (YOUR NEW CREDENTIALS)
 # ==========================================
-FYERS_CLIENT_ID = "88UNAKT8M3-200"
-FYERS_SECRET_KEY = "tvGINeSAUY8JqLZ5"
-FYERS_REDIRECT_URI = "https://algotrader-production-0907.up.railway.app/callback"
+FYERS_CLIENT_ID = "3SULFH5YXW-100"
+FYERS_SECRET_KEY = "KJ4ZFJFB55"
+FYERS_REDIRECT_URI = "https://web-production-1d82c8.up.railway.app/callback"
 
 # ==========================================
 # 3. FYERS BROKER CLASS
