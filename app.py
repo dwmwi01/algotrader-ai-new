@@ -6,6 +6,7 @@ import datetime
 import json
 import random
 import os
+import urllib.parse
 from fyers_apiv3 import fyersModel
 
 # ==========================================
@@ -94,7 +95,7 @@ st.markdown("""
     .val-loss { color: #F43F5E; text-shadow: 0 0 15px rgba(244,63,94,0.3); }
     .val-blue { color: #3B82F6; text-shadow: 0 0 15px rgba(59,130,246,0.3); }
 
-    /* 4. BUTTONS (Iridescent vs Dark Glass) */
+    /* 4. BUTTONS */
     .stButton>button {
         width: 100%;
         border-radius: 50px !important;
@@ -185,7 +186,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FYERS BROKER CLASS
+# 2. FYERS OAUTH 2.0 CONFIGURATION
+# ==========================================
+# IMPORTANT: Replace these with your actual credentials from the Fyers API Dashboard.
+# The redirect_uri MUST be the exact public URL of your deployed Streamlit app.
+FYERS_CLIENT_ID = "YOUR_APP_ID-100"      # e.g., "3SULFH5YXW-100"
+FYERS_SECRET_KEY = "YOUR_SECRET_ID"       # e.g., "tvGINeSAUY8JqLZ5"
+FYERS_REDIRECT_URI = "https://your-app-name.up.railway.app" # Your app's public URL
+
+# ==========================================
+# 3. FYERS BROKER CLASS
 # ==========================================
 class FyersBroker:
     def __init__(self, client_id, access_token):
@@ -243,13 +253,9 @@ class FyersBroker:
             return max(1.0, round(exit_premium, 2))
 
 # ==========================================
-# 3. HISTORICAL DATA FETCHER
+# 4. HISTORICAL DATA FETCHER
 # ==========================================
 def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, resolution="1"):
-    """
-    Fetches 1-minute (or other resolution) historical OHLCV data from Fyers.
-    Handles API's 100-day per-request limit by chunking date ranges.
-    """
     fyers = fyersModel.FyersModel(
         client_id=client_id, token=access_token, is_async=False, log_path=""
     )
@@ -276,7 +282,7 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
         except Exception as e:
             st.error(f"Request error: {e}")
         current_start = chunk_end + datetime.timedelta(days=1)
-        time.sleep(0.5)  # Rate limit courtesy
+        time.sleep(0.5)
     
     if not all_candles:
         return pd.DataFrame()
@@ -288,50 +294,34 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 4. BACKTESTING ENGINE
+# 5. BACKTESTING ENGINE
 # ==========================================
 def run_backtest(df, config):
-    """
-    Bar-by-bar backtest of the Golden Trio (Chop Killer + Scale-Out + Trailing Stop).
-    Uses spot price as a proxy for option premium (delta ≈ 0.5).
-    Returns a summary dict with PnL, trade count, win rate, and daily results.
-    """
-    BROKERAGE_PER_ORDER = 20  # ₹ per order
-    SLIPPAGE_PER_POINT = 2    # ₹ per point of spot move
-    
+    BROKERAGE_PER_ORDER = 20
     df = df.between_time('09:15', '15:30').copy()
     daily_groups = df.groupby(df.index.date)
-    
     total_pnl = 0.0
     trades_taken = 0
     win_days = 0
     daily_results = []
     
     for date, day_data in daily_groups:
-        if len(day_data) < 300:  # Skip truncated days
+        if len(day_data) < 300:
             continue
-        
-        # --- 1. Build Opening Range (09:30–09:44) ---
         orb_data = day_data.between_time('09:30', '09:44')
         if orb_data.empty:
             continue
         range_high = orb_data['high'].max()
         range_low = orb_data['low'].min()
         width = range_high - range_low
-        
         if width <= 5:
             daily_results.append({"date": str(date), "pnl": 0, "reason": "Range too tight"})
             continue
-        
-        # --- 2. Chop Killer ---
         if width > config["chop_killer_max_range"]:
             daily_results.append({"date": str(date), "pnl": 0, "reason": "Chop Killer (wide range)"})
             continue
         
-        # Position sizing
         qty = max(75, round((config["risk_amount"] / width) / 75) * 75)
-        
-        # --- 3. Look for breakout after 09:44 ---
         post_orb = day_data.between_time('09:45', '15:30')
         position = None
         entry_spot = 0.0
@@ -344,13 +334,11 @@ def run_backtest(df, config):
         
         for idx, row in post_orb.iterrows():
             spot = row['close']
-            
-            # Entry logic
             if position is None:
                 if spot > range_high:
                     position = "CE"
                     entry_spot = spot
-                    entry_premium = 150.0  # proxy base premium
+                    entry_premium = 150.0
                     stop_loss = range_low
                     highest_lowest = spot
                     has_scaled_out = False
@@ -364,20 +352,17 @@ def run_backtest(df, config):
                 else:
                     continue
             
-            # Track extreme for trailing
             if position == "CE":
                 highest_lowest = max(highest_lowest, spot)
             else:
                 highest_lowest = min(highest_lowest, spot)
             
-            # Stop Loss (spot-based)
             if (position == "CE" and spot < stop_loss) or (position == "PE" and spot > stop_loss):
                 exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
                 trade_pnl = (exit_premium - entry_premium) * remaining_qty
                 trade_pnl -= BROKERAGE_PER_ORDER * 2
                 break
             
-            # Scale-Out
             if not has_scaled_out:
                 scale_target = entry_spot + (config["scale_out_multiple"] * width) if position == "CE" else entry_spot - (config["scale_out_multiple"] * width)
                 if (position == "CE" and spot >= scale_target) or (position == "PE" and spot <= scale_target):
@@ -387,9 +372,8 @@ def run_backtest(df, config):
                         trade_pnl += (exit_premium - entry_premium) * half_qty - BROKERAGE_PER_ORDER
                         remaining_qty -= half_qty
                     has_scaled_out = True
-                    stop_loss = entry_spot  # move to break-even
+                    stop_loss = entry_spot
             
-            # Trailing Stop (after scale-out)
             elif has_scaled_out:
                 trail_dist = config["trailing_stop_multiple"] * width
                 trail_sl = highest_lowest - trail_dist if position == "CE" else highest_lowest + trail_dist
@@ -398,7 +382,6 @@ def run_backtest(df, config):
                     trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
                     break
         
-        # Time exit at 15:30
         if position is not None and remaining_qty > 0:
             last_spot = post_orb.iloc[-1]['close']
             exit_premium = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
@@ -412,31 +395,19 @@ def run_backtest(df, config):
             daily_results.append({"date": str(date), "pnl": round(trade_pnl, 2), "reason": "Trade executed"})
     
     win_rate = (win_days / trades_taken * 100) if trades_taken > 0 else 0.0
-    return {
-        "total_pnl": round(total_pnl, 2),
-        "trades_taken": trades_taken,
-        "win_rate": round(win_rate, 2),
-        "daily_results": daily_results
-    }
+    return {"total_pnl": round(total_pnl, 2), "trades_taken": trades_taken, "win_rate": round(win_rate, 2), "daily_results": daily_results}
 
 # ==========================================
-# 5. SESSION STATE INITIALIZATION
+# 6. SESSION STATE INITIALIZATION
 # ==========================================
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "Live Execution"
-
 if 'config' not in st.session_state:
-    st.session_state.config = {
-        "risk_amount": 2000, "chop_killer_max_range": 120,
-        "scale_out_multiple": 1.5, "trailing_stop_multiple": 0.5
-    }
-
+    st.session_state.config = {"risk_amount": 2000, "chop_killer_max_range": 120, "scale_out_multiple": 1.5, "trailing_stop_multiple": 0.5}
 if 'broker' not in st.session_state:
-    st.session_state.broker = None  # Will be set after Fyers connect
-
+    st.session_state.broker = None
 if 'fyers_connected' not in st.session_state:
     st.session_state.fyers_connected = False
-
 if 'strategy' not in st.session_state:
     st.session_state.strategy = {
         "state": "WAIT_RANGE", "range_high": None, "range_low": None, "width": None,
@@ -452,42 +423,88 @@ def log_message(msg):
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
-# 6. UI HEADER & FYERS CONNECTION
+# 7. OAUTH FLOW HANDLER
 # ==========================================
-st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
-
-# Fyers connection panel
-with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyers_connected):
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        fyers_client_id = st.text_input("Client ID", value="", placeholder="XC4XXXXM-100")
-    with col_f2:
-        fyers_access_token = st.text_input("Access Token", value="", type="password", placeholder="eyJ0eX...")
-    
-    col_conn1, col_conn2 = st.columns([1, 3])
-    with col_conn1:
-        if st.button("Connect Fyers", type="primary", use_container_width=True):
-            if fyers_client_id and fyers_access_token:
-                broker = FyersBroker(fyers_client_id, fyers_access_token)
+def handle_fyers_auth_callback():
+    """Checks URL parameters for an auth_code and exchanges it for an access token."""
+    query_params = st.query_params
+    if "auth_code" in query_params and not st.session_state.fyers_connected:
+        auth_code = query_params["auth_code"]
+        try:
+            session = fyersModel.SessionModel(
+                client_id=FYERS_CLIENT_ID,
+                secret_key=FYERS_SECRET_KEY,
+                redirect_uri=FYERS_REDIRECT_URI,
+                response_type="code",
+                grant_type="authorization_code",
+            )
+            session.set_token(auth_code)
+            response = session.generate_token()
+            if response.get('s') == 'ok':
+                access_token = response['access_token']
+                broker = FyersBroker(FYERS_CLIENT_ID, access_token)
                 success, message = broker.connect()
                 if success:
                     st.session_state.broker = broker
                     st.session_state.fyers_connected = True
-                    st.success(message)
+                    st.success("✅ Successfully connected to Fyers!")
+                    st.query_params.clear()  # Clear the auth_code from the URL
                     st.rerun()
                 else:
-                    st.error(f"Connection failed: {message}")
+                    st.error(f"Token exchange succeeded, but connection failed: {message}")
             else:
-                st.warning("Please enter both Client ID and Access Token.")
-    with col_conn2:
-        if st.session_state.fyers_connected:
-            st.success("✅ Connected to Fyers (Paper Trading Mode)")
-        else:
-            st.info("Not connected. Enter credentials above to enable live paper trading.")
+                st.error(f"Token exchange failed: {response.get('message', 'Unknown error')}")
+        except Exception as e:
+            st.error(f"Authentication error: {e}")
 
 # ==========================================
-# 7. CUSTOM TAB NAVIGATION
+# 8. UI HEADER & FYERS CONNECTION PANEL
+# ==========================================
+st.markdown("<h1>Hermes Quant Engine</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Next-Generation Algorithmic Execution</p>", unsafe_allow_html=True)
+
+# Handle the OAuth callback before rendering the UI
+handle_fyers_auth_callback()
+
+with st.expander("🔌 Fyers API Connection", expanded=not st.session_state.fyers_connected):
+    if st.session_state.fyers_connected:
+        st.success("✅ Connected to Fyers (Paper Trading Mode)")
+        if st.button("Disconnect", type="secondary"):
+            st.session_state.fyers_connected = False
+            st.session_state.broker = None
+            st.rerun()
+    else:
+        # Generate the Fyers login URL using the SDK's SessionModel
+        auth_session = fyersModel.SessionModel(
+            client_id=FYERS_CLIENT_ID,
+            secret_key=FYERS_SECRET_KEY,
+            redirect_uri=FYERS_REDIRECT_URI,
+            response_type="code",
+            grant_type="authorization_code",
+        )
+        login_url = auth_session.generate_authcode()
+        
+        st.markdown(f"""
+        <a href="{login_url}" target="_blank" style="text-decoration: none;">
+            <button style="
+                width: 100%;
+                border-radius: 50px;
+                background: linear-gradient(90deg, #00D2FF 0%, #928DAB 50%, #FF7EB3 100%);
+                color: #FFFFFF;
+                font-weight: 600;
+                font-size: 15px;
+                padding: 12px 0;
+                border: none;
+                box-shadow: 0 4px 15px rgba(255, 126, 179, 0.4);
+                cursor: pointer;
+                transition: all 0.3s ease;
+            ">Connect Fyers</button>
+        </a>
+        """, unsafe_allow_html=True)
+        st.info("Click the button above to log in with your Fyers credentials. You will be redirected back to this app automatically.")
+
+# ==========================================
+# 9. CUSTOM TAB NAVIGATION
 # ==========================================
 col_t1, col_t2, col_t3, _ = st.columns([1, 1, 1, 3])
 with col_t1:
@@ -506,12 +523,11 @@ with col_t3:
 st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
 # ==========================================
-# 8. TAB CONTENT: LIVE EXECUTION
+# 10. TAB CONTENT: LIVE EXECUTION
 # ==========================================
 if st.session_state.active_tab == "Live Execution":
     s = st.session_state.strategy
     col1, col2, col3, col4, col5 = st.columns(5)
-    
     pnl_class = "val-profit" if s["day_pnl"] > 0 else "val-loss" if s["day_pnl"] < 0 else ""
     
     with col1:
@@ -529,12 +545,10 @@ if st.session_state.active_tab == "Live Execution":
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Toggle Engine Button
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
         btn_label = "⏹ STOP ENGINE" if s["is_running"] else "▶ START ENGINE"
         btn_type = "secondary" if s["is_running"] else "primary"
-        
         if st.button(btn_label, use_container_width=True, type=btn_type):
             if not st.session_state.fyers_connected:
                 st.error("Please connect to Fyers first.")
@@ -545,7 +559,6 @@ if st.session_state.active_tab == "Live Execution":
                 else:
                     log_message("Engine Stopped.")
                 st.rerun()
-                
     with col_btn2:
         if st.button("🔄 RESET DAY", use_container_width=True):
             st.session_state.strategy = {
@@ -559,18 +572,14 @@ if st.session_state.active_tab == "Live Execution":
     st.markdown("<h3>System Activity</h3>", unsafe_allow_html=True)
     log_container = st.empty()
 
-    # Live execution loop
     if s["is_running"] and st.session_state.fyers_connected:
         broker = st.session_state.broker
         config = st.session_state.config
         s["tick_count"] += 1
-        
-        # Simulated time for testing (can replace with real clock)
         sim_minute = 15 + s["tick_count"]
         hour = 9 + (sim_minute // 60)
         minute = sim_minute % 60
         s["sim_time"] = f"{hour:02d}:{minute:02d}"
-
         spot = broker.get_ltp()
         if spot is None:
             log_message("⚠️ Fyers quote failed. Check token/connection.")
@@ -624,7 +633,6 @@ if st.session_state.active_tab == "Live Execution":
                 else:
                     s["highest_lowest"] = min(s["highest_lowest"], spot)
 
-                # Stop Loss
                 if (s["side"] == "CE" and spot < s["range_low"]) or (s["side"] == "PE" and spot > s["range_high"]):
                     exit_prem = broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                     pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
@@ -632,7 +640,6 @@ if st.session_state.active_tab == "Live Execution":
                     s["state"] = "DONE"
                     log_message(f"❌ STOPLOSS HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
 
-                # Scale-Out
                 elif not s["has_scaled_out"]:
                     scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
                     if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
@@ -649,7 +656,6 @@ if st.session_state.active_tab == "Live Execution":
                         if s["side"] == "CE": s["range_low"] = s["entry_spot"]
                         else: s["range_high"] = s["entry_spot"]
 
-                # Trailing Stop
                 elif s["has_scaled_out"]:
                     trail_dist = config["trailing_stop_multiple"] * s["width"]
                     trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
@@ -664,7 +670,6 @@ if st.session_state.active_tab == "Live Execution":
                     dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
                     log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
-        # Render logs
         log_html = "<div class='log-container'>"
         for item in s["logs"]:
             msg = item["msg"]
@@ -678,15 +683,13 @@ if st.session_state.active_tab == "Live Execution":
         log_container.markdown(log_html, unsafe_allow_html=True)
         
         if s["is_running"] and s["state"] != "DONE":
-            time.sleep(2)  # Poll every 2 seconds (API rate limit friendly)
+            time.sleep(2)
             st.rerun()
         elif s["is_running"] and s["state"] == "DONE":
             log_message("--- TRADING DAY COMPLETE ---")
             s["is_running"] = False
             st.rerun()
-
     else:
-        # Render static logs when stopped
         log_html = "<div class='log-container'>"
         for item in st.session_state.strategy["logs"]:
             msg = item["msg"]
@@ -700,7 +703,7 @@ if st.session_state.active_tab == "Live Execution":
         log_container.markdown(log_html, unsafe_allow_html=True)
 
 # ==========================================
-# 9. TAB CONTENT: BACKTESTER
+# 11. TAB CONTENT: BACKTESTER
 # ==========================================
 elif st.session_state.active_tab == "Backtester":
     st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
@@ -715,19 +718,16 @@ elif st.session_state.active_tab == "Backtester":
             with st.spinner("Simulating trades..."):
                 results = run_backtest(df, st.session_state.config)
                 st.success("Backtest Complete!")
-                
                 col_r1, col_r2, col_r3 = st.columns(3)
                 col_r1.metric("Total PnL", f"₹{results['total_pnl']:.2f}")
                 col_r2.metric("Trades Taken", results['trades_taken'])
                 col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
-                
                 if results['daily_results']:
                     st.subheader("Daily Breakdown")
                     st.dataframe(pd.DataFrame(results['daily_results']), use_container_width=True)
     else:
         st.info("Please upload a CSV file. Use the Fyers data fetcher below to download one.")
 
-    # --- Fyers Historical Data Fetcher ---
     st.markdown("---")
     st.subheader("📥 Fetch Data from Fyers")
     
@@ -737,7 +737,6 @@ elif st.session_state.active_tab == "Backtester":
             fetch_symbol = st.text_input("Symbol", value="NSE:NIFTY50-INDEX")
         with col_d2:
             fetch_resolution = st.selectbox("Resolution", ["1", "5", "15", "60"])
-        
         col_date1, col_date2 = st.columns(2)
         with col_date1:
             start_date = st.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=30))
@@ -769,7 +768,7 @@ elif st.session_state.active_tab == "Backtester":
         st.info("Connect to Fyers above to fetch historical data directly.")
 
 # ==========================================
-# 10. TAB CONTENT: EOD LEARNER
+# 12. TAB CONTENT: EOD LEARNER
 # ==========================================
 elif st.session_state.active_tab == "EOD Learner":
     st.markdown("<h3>EOD Self-Learning Coach</h3>", unsafe_allow_html=True)
