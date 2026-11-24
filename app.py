@@ -20,25 +20,38 @@ if 'config' not in st.session_state:
         "trailing_stop_multiple": 0.5
     }
 
-# Mock Broker (Simulates live market prices and option fills)
+# Mock Broker (Realistic Simulation)
 class MockBroker:
     def __init__(self):
         self.price = 22400.0
-        self.trend = 0.5 # Slight upward drift
+        self.entry_spot = None
+        self.entry_premium = None
+        self.side = None
         
     def get_ltp(self):
-        # Random walk for spot price
-        change = random.uniform(-10, 12) + self.trend
+        # Simulate market movement (slight upward trend for testing)
+        change = random.uniform(-10, 12) + 0.5
         self.price += change
         return round(self.price, 2)
         
-    def place_order(self, side, qty):
-        # Simulate option premium fill based on spot price (rough proxy)
-        # Premium will swing wildly to simulate option movement
-        base_premium = 150.0
-        premium_move = random.uniform(-15, 25) 
-        fill = base_premium + premium_move
-        return round(fill, 2)
+    def place_order(self, action, qty, side, spot):
+        if action == "BUY":
+            self.entry_spot = spot
+            self.side = side
+            # Base premium 150
+            self.entry_premium = 150.0 + random.uniform(-3, 3) 
+            return round(self.entry_premium, 2)
+            
+        elif action == "SELL":
+            # Realistic premium tracking based on Spot movement
+            spot_move = spot - self.entry_spot
+            if self.side == "CE":
+                premium_change = spot_move * 0.5 # Delta of 0.5
+            else:
+                premium_change = -spot_move * 0.5
+                
+            exit_premium = self.entry_premium + premium_change + random.uniform(-1, 1)
+            return max(1.0, round(exit_premium, 2))
 
 if 'broker' not in st.session_state:
     st.session_state.broker = MockBroker()
@@ -56,7 +69,7 @@ if 'strategy' not in st.session_state:
         "entry_spot": None,
         "entry_premium": None,
         "has_scaled_out": False,
-        "highest_lowest": None, # Tracks highest spot for CE, lowest for PE
+        "highest_lowest": None,
         "day_pnl": 0.0,
         "logs": [],
         "is_running": False,
@@ -67,14 +80,13 @@ if 'strategy' not in st.session_state:
 def log_message(msg):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     st.session_state.strategy["logs"].insert(0, f"[{timestamp}] {msg}")
-    # Keep logs to last 50 to prevent memory bloat
     if len(st.session_state.strategy["logs"]) > 50:
         st.session_state.strategy["logs"].pop()
 
 # ==========================================
 # 2. UI LAYOUT & TABS
 # ==========================================
-st.title("⚡ Hermes Unified Trading System (Mock)")
+st.title("⚡ Hermes Unified Trading System")
 st.markdown("---")
 
 tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Trading (Golden Trio)", "🧪 Backtester", "🧠 Self-Learning Coach"])
@@ -85,7 +97,6 @@ tab_live, tab_backtest, tab_learn = st.tabs(["📈 Live Trading (Golden Trio)", 
 with tab_live:
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    # Placeholders for metrics
     metric_state = col1.empty()
     metric_range = col2.empty()
     metric_qty = col3.empty()
@@ -123,7 +134,6 @@ with tab_live:
     st.markdown("### Live Logs")
     log_container = st.empty()
 
-    # --- SIMULATION LOOP ---
     if st.session_state.strategy["is_running"]:
         s = st.session_state.strategy
         config = st.session_state.config
@@ -137,7 +147,7 @@ with tab_live:
 
         spot = st.session_state.broker.get_ltp()
 
-        # --- 1. BUILD OPENING RANGE (Simulated 9:30 to 9:44) ---
+        # --- 1. BUILD OPENING RANGE ---
         if s["state"] == "WAIT_RANGE":
             if s["sim_time"] < "09:30":
                 log_message(f"Pre-market. Spot: {spot}")
@@ -150,11 +160,9 @@ with tab_live:
                     s["range_low"] = min(s["range_low"], spot)
                     log_message(f"Building Range... High: {s['range_high']} | Low: {s['range_low']}")
                 
-                # Lock range at 09:44
                 if s["sim_time"] == "09:44":
                     s["width"] = s["range_high"] - s["range_low"]
                     
-                    # --- CHOP KILLER ---
                     if s["width"] > config["chop_killer_max_range"]:
                         s["state"] = "DONE"
                         log_message(f"CHOP KILLER: Width {s['width']:.1f} > {config['chop_killer_max_range']}. Skipping day.")
@@ -171,14 +179,14 @@ with tab_live:
             if spot > s["range_high"]:
                 s["side"] = "CE"
                 s["entry_spot"] = spot
-                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"])
+                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"], "CE", spot)
                 s["highest_lowest"] = spot
                 s["state"] = "IN_TRADE"
                 log_message(f"🚀 BREAKOUT! ENTER CE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
             elif spot < s["range_low"]:
                 s["side"] = "PE"
                 s["entry_spot"] = spot
-                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"])
+                s["entry_premium"] = st.session_state.broker.place_order("BUY", s["qty"], "PE", spot)
                 s["highest_lowest"] = spot
                 s["state"] = "IN_TRADE"
                 log_message(f"🔻 BREAKDOWN! ENTER PE at Spot {spot:.1f} | Premium: {s['entry_premium']}")
@@ -187,7 +195,6 @@ with tab_live:
 
         # --- 3. MANAGE TRADE (GOLDEN TRIO) ---
         elif s["state"] == "IN_TRADE":
-            # Update highest/lowest tracking
             if s["side"] == "CE":
                 s["highest_lowest"] = max(s["highest_lowest"], spot)
             else:
@@ -195,7 +202,7 @@ with tab_live:
 
             # A. Original Stop Loss
             if (s["side"] == "CE" and spot < s["range_low"]) or (s["side"] == "PE" and spot > s["range_high"]):
-                exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"])
+                exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                 pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
                 s["day_pnl"] += pnl
                 s["state"] = "DONE"
@@ -206,13 +213,24 @@ with tab_live:
                 scale_target = s["entry_spot"] + (config["scale_out_multiple"] * s["width"]) if s["side"] == "CE" else s["entry_spot"] - (config["scale_out_multiple"] * s["width"])
                 
                 if (s["side"] == "CE" and spot >= scale_target) or (s["side"] == "PE" and spot <= scale_target):
-                    half_qty = max(75, s["remaining_qty"] // 2)
-                    exit_prem = st.session_state.broker.place_order("SELL", half_qty)
-                    pnl = (exit_prem - s["entry_premium"]) * half_qty if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * half_qty
-                    s["day_pnl"] += pnl
-                    s["remaining_qty"] -= half_qty
+                    # Calculate half quantity (rounded to nearest lot)
+                    half_qty = (s["remaining_qty"] // 2 // 75) * 75
+                    
+                    if half_qty > 0:
+                        exit_prem = st.session_state.broker.place_order("SELL", half_qty, s["side"], spot)
+                        pnl = (exit_prem - s["entry_premium"]) * half_qty if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * half_qty
+                        s["day_pnl"] += pnl
+                        s["remaining_qty"] -= half_qty
+                        log_message(f"💰 SCALE OUT! Sold {half_qty} at {exit_prem} | PnL: ₹{pnl:.2f} | SL moved to B/E.")
+                    else:
+                        log_message(f"🎯 TARGET HIT, but only 1 lot. Holding for trailing stop.")
+                        
                     s["has_scaled_out"] = True
-                    log_message(f"💰 SCALE OUT! Sold {half_qty} at {exit_prem} | PnL: ₹{pnl:.2f} | SL moved to B/E.")
+                    # Move SL to Break-Even
+                    if s["side"] == "CE":
+                        s["range_low"] = s["entry_spot"]
+                    else:
+                        s["range_high"] = s["entry_spot"]
 
             # C. Trailing Stop
             elif s["has_scaled_out"]:
@@ -220,21 +238,22 @@ with tab_live:
                 trail_sl = s["highest_lowest"] - trail_dist if s["side"] == "CE" else s["highest_lowest"] + trail_dist
                 
                 if (s["side"] == "CE" and spot <= trail_sl) or (s["side"] == "PE" and spot >= trail_sl):
-                    exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"])
+                    exit_prem = st.session_state.broker.place_order("SELL", s["remaining_qty"], s["side"], spot)
                     pnl = (exit_prem - s["entry_premium"]) * s["remaining_qty"] if s["side"] == "CE" else (s["entry_premium"] - exit_prem) * s["remaining_qty"]
                     s["day_pnl"] += pnl
                     s["state"] = "DONE"
                     log_message(f"🎯 TRAILING STOP HIT. Exit: {exit_prem} | PnL: ₹{pnl:.2f}")
 
             if s["state"] == "IN_TRADE":
-                log_message(f"Holding {s['side']} | Spot: {spot} | Trail Target: {s['highest_lowest']}")
+                dist_to_trail = (s["highest_lowest"] - (config["trailing_stop_multiple"] * s["width"])) if s["side"] == "CE" else (s["highest_lowest"] + (config["trailing_stop_multiple"] * s["width"]))
+                log_message(f"Holding {s['side']} | Spot: {spot} | Trail SL: {dist_to_trail:.2f}")
 
         # Update UI and loop
         update_metrics()
         log_container.text("\n".join(s["logs"]))
         
         if s["is_running"] and s["state"] != "DONE":
-            time.sleep(1.5) # Controls simulation speed
+            time.sleep(1.0) # Controls simulation speed
             st.rerun()
         elif s["is_running"] and s["state"] == "DONE":
             log_message("--- TRADING DAY COMPLETE ---")
@@ -304,7 +323,6 @@ with tab_learn:
             
             current_scale = st.session_state.config["scale_out_multiple"]
             if st.session_state.strategy["day_pnl"] > 0:
-                # If we made money, maybe we can be slightly more aggressive
                 st.session_state.config["scale_out_multiple"] = round(min(3.0, current_scale + 0.1), 1)
                 st.success(f"Coach: Market trended well today. Increased Scale-Out to {st.session_state.config['scale_out_multiple']}")
             else:
