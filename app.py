@@ -237,7 +237,6 @@ class FyersBroker:
             return None
     
     def place_order(self, action, qty, side, spot):
-        # PAPER TRADING SIMULATION (no real orders placed)
         if action == "BUY":
             self.entry_spot = spot
             self.side = side
@@ -297,19 +296,18 @@ def run_backtest(df, config):
     diag = {"total_days": 0, "skipped_short_day": 0, "skipped_no_orb": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "traded": 0}
     BROKERAGE_PER_ORDER = 20
     
-    # 1. Standardize Columns
     df.columns = [str(c).lower() for c in df.columns]
-    required_cols = ['open', 'high', 'low', 'close']
-    for col in required_cols:
-        if col not in df.columns:
-            return {"error": f"Missing required column: {col}. Found columns: {list(df.columns)}"}
     
-    # 2. Standardize Datetime Index
     if not isinstance(df.index, pd.DatetimeIndex):
         try:
             df.index = pd.to_datetime(df.index)
         except:
             return {"error": "Index is not a valid datetime format."}
+
+    # --- TIMEZONE FIX ---
+    # If the first hour is before 9 AM, it's likely UTC. Convert to IST (+5:30)
+    if df.index[0].hour < 9:
+        df.index = df.index + pd.Timedelta(hours=5, minutes=30)
             
     df = df.between_time('09:15', '15:30').copy()
     daily_groups = df.groupby(df.index.date)
@@ -322,7 +320,6 @@ def run_backtest(df, config):
     for date, day_data in daily_groups:
         diag["total_days"] += 1
         
-        # Relaxed from 300 to 200 to be safe
         if len(day_data) < 200:
             diag["skipped_short_day"] += 1
             continue
@@ -735,7 +732,7 @@ if st.session_state.active_tab == "Live Execution":
         log_container.markdown(log_html, unsafe_allow_html=True)
 
 # ==========================================
-# 11. TAB CONTENT: BACKTESTER (UPDATED)
+# 11. TAB CONTENT: BACKTESTER
 # ==========================================
 elif st.session_state.active_tab == "Backtester":
     st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
@@ -744,18 +741,14 @@ elif st.session_state.active_tab == "Backtester":
     uploaded_file = st.file_uploader("Upload NIFTY 1-min CSV", type=["csv"])
     if uploaded_file is not None:
         try:
-            # Robust loading: read as standard dataframe, then process
             df = pd.read_csv(uploaded_file)
             st.write(f"Data Loaded: {len(df)} rows.")
             
-            # Show first few rows to debug format
             with st.expander("Preview Raw CSV Data"):
                 st.dataframe(df.head())
 
-            # Handle Date/Time parsing
             df.columns = [str(c).lower() for c in df.columns]
             
-            # If 'datetime' column exists, use it. Otherwise try to combine date/time.
             if 'datetime' in df.columns:
                 df['datetime'] = pd.to_datetime(df['datetime'])
                 df.set_index('datetime', inplace=True)
@@ -763,14 +756,12 @@ elif st.session_state.active_tab == "Backtester":
                 df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
                 df.set_index('datetime', inplace=True)
             elif 'date' in df.columns:
-                # If only date exists, assume it's already a datetime index
                 df['datetime'] = pd.to_datetime(df['date'])
                 df.set_index('datetime', inplace=True)
             else:
                 st.error("Could not find 'datetime', 'date', or 'timestamp' column in the CSV.")
                 st.stop()
 
-            # Check for OHLC columns
             required_cols = ['open', 'high', 'low', 'close']
             missing = [c for c in required_cols if c not in df.columns]
             if missing:
@@ -786,13 +777,11 @@ elif st.session_state.active_tab == "Backtester":
                     else:
                         st.success("Backtest Complete!")
                         
-                        # Display Results
                         col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Total PnL", f"₹{results['total_pnl']:.2f}")
                         col_r2.metric("Trades Taken", results['trades_taken'])
                         col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
                         
-                        # Display Diagnostics
                         with st.expander("Diagnostic Details (Why 0 trades?)"):
                             st.json(results["diag"])
                             if results['trades_taken'] == 0:
