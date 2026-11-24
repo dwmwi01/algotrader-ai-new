@@ -185,7 +185,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FYERS OAUTH 2.0 CONFIGURATION (YOUR NEW CREDENTIALS)
+# 2. FYERS OAUTH 2.0 CONFIGURATION
 # ==========================================
 FYERS_CLIENT_ID = "3SULFH5YXW-100"
 FYERS_SECRET_KEY = "KJ4ZFJFB55"
@@ -291,35 +291,63 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 5. BACKTESTING ENGINE
+# 5. BULLETPROOF BACKTESTING ENGINE
 # ==========================================
 def run_backtest(df, config):
+    diag = {"total_days": 0, "skipped_short_day": 0, "skipped_no_orb": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "traded": 0}
     BROKERAGE_PER_ORDER = 20
+    
+    # 1. Standardize Columns
+    df.columns = [str(c).lower() for c in df.columns]
+    required_cols = ['open', 'high', 'low', 'close']
+    for col in required_cols:
+        if col not in df.columns:
+            return {"error": f"Missing required column: {col}. Found columns: {list(df.columns)}"}
+    
+    # 2. Standardize Datetime Index
+    if not isinstance(df.index, pd.DatetimeIndex):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except:
+            return {"error": "Index is not a valid datetime format."}
+            
     df = df.between_time('09:15', '15:30').copy()
     daily_groups = df.groupby(df.index.date)
+    
     total_pnl = 0.0
     trades_taken = 0
     win_days = 0
     daily_results = []
     
     for date, day_data in daily_groups:
-        if len(day_data) < 300:
+        diag["total_days"] += 1
+        
+        # Relaxed from 300 to 200 to be safe
+        if len(day_data) < 200:
+            diag["skipped_short_day"] += 1
             continue
+            
         orb_data = day_data.between_time('09:30', '09:44')
         if orb_data.empty:
+            diag["skipped_no_orb"] += 1
             continue
+            
         range_high = orb_data['high'].max()
         range_low = orb_data['low'].min()
         width = range_high - range_low
+        
         if width <= 5:
             daily_results.append({"date": str(date), "pnl": 0, "reason": "Range too tight"})
             continue
+            
         if width > config["chop_killer_max_range"]:
+            diag["skipped_chop"] += 1
             daily_results.append({"date": str(date), "pnl": 0, "reason": "Chop Killer (wide range)"})
             continue
         
         qty = max(75, round((config["risk_amount"] / width) / 75) * 75)
         post_orb = day_data.between_time('09:45', '15:30')
+        
         position = None
         entry_spot = 0.0
         entry_premium = 0.0
@@ -385,14 +413,23 @@ def run_backtest(df, config):
             trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
         
         if position is not None:
+            diag["traded"] += 1
             trades_taken += 1
             total_pnl += trade_pnl
             if trade_pnl > 0:
                 win_days += 1
             daily_results.append({"date": str(date), "pnl": round(trade_pnl, 2), "reason": "Trade executed"})
+        else:
+            diag["skipped_no_breakout"] += 1
     
     win_rate = (win_days / trades_taken * 100) if trades_taken > 0 else 0.0
-    return {"total_pnl": round(total_pnl, 2), "trades_taken": trades_taken, "win_rate": round(win_rate, 2), "daily_results": daily_results}
+    return {
+        "total_pnl": round(total_pnl, 2), 
+        "trades_taken": trades_taken, 
+        "win_rate": round(win_rate, 2), 
+        "daily_results": daily_results,
+        "diag": diag
+    }
 
 # ==========================================
 # 6. SESSION STATE INITIALIZATION
@@ -698,7 +735,7 @@ if st.session_state.active_tab == "Live Execution":
         log_container.markdown(log_html, unsafe_allow_html=True)
 
 # ==========================================
-# 11. TAB CONTENT: BACKTESTER
+# 11. TAB CONTENT: BACKTESTER (UPDATED)
 # ==========================================
 elif st.session_state.active_tab == "Backtester":
     st.markdown("<h3>Historical Backtester</h3>", unsafe_allow_html=True)
@@ -706,20 +743,67 @@ elif st.session_state.active_tab == "Backtester":
     
     uploaded_file = st.file_uploader("Upload NIFTY 1-min CSV", type=["csv"])
     if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file, index_col='datetime', parse_dates=True)
-        st.write(f"Data Loaded: {len(df)} rows.")
-        
-        if st.button("Run Backtest", type="primary"):
-            with st.spinner("Simulating trades..."):
-                results = run_backtest(df, st.session_state.config)
-                st.success("Backtest Complete!")
-                col_r1, col_r2, col_r3 = st.columns(3)
-                col_r1.metric("Total PnL", f"₹{results['total_pnl']:.2f}")
-                col_r2.metric("Trades Taken", results['trades_taken'])
-                col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
-                if results['daily_results']:
-                    st.subheader("Daily Breakdown")
-                    st.dataframe(pd.DataFrame(results['daily_results']), use_container_width=True)
+        try:
+            # Robust loading: read as standard dataframe, then process
+            df = pd.read_csv(uploaded_file)
+            st.write(f"Data Loaded: {len(df)} rows.")
+            
+            # Show first few rows to debug format
+            with st.expander("Preview Raw CSV Data"):
+                st.dataframe(df.head())
+
+            # Handle Date/Time parsing
+            df.columns = [str(c).lower() for c in df.columns]
+            
+            # If 'datetime' column exists, use it. Otherwise try to combine date/time.
+            if 'datetime' in df.columns:
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df.set_index('datetime', inplace=True)
+            elif 'date' in df.columns and 'time' in df.columns:
+                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
+                df.set_index('datetime', inplace=True)
+            elif 'date' in df.columns:
+                # If only date exists, assume it's already a datetime index
+                df['datetime'] = pd.to_datetime(df['date'])
+                df.set_index('datetime', inplace=True)
+            else:
+                st.error("Could not find 'datetime', 'date', or 'timestamp' column in the CSV.")
+                st.stop()
+
+            # Check for OHLC columns
+            required_cols = ['open', 'high', 'low', 'close']
+            missing = [c for c in required_cols if c not in df.columns]
+            if missing:
+                st.error(f"Missing required columns in CSV: {missing}")
+                st.stop()
+
+            if st.button("Run Backtest", type="primary"):
+                with st.spinner("Simulating trades..."):
+                    results = run_backtest(df, st.session_state.config)
+                    
+                    if "error" in results:
+                        st.error(results["error"])
+                    else:
+                        st.success("Backtest Complete!")
+                        
+                        # Display Results
+                        col_r1, col_r2, col_r3 = st.columns(3)
+                        col_r1.metric("Total PnL", f"₹{results['total_pnl']:.2f}")
+                        col_r2.metric("Trades Taken", results['trades_taken'])
+                        col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
+                        
+                        # Display Diagnostics
+                        with st.expander("Diagnostic Details (Why 0 trades?)"):
+                            st.json(results["diag"])
+                            if results['trades_taken'] == 0:
+                                st.warning("Check the diagnostic details above. Common reasons for 0 trades: 1) The 'Chop Killer' range is too wide (default 120). 2) The CSV doesn't contain intraday time data (e.g., it's daily data). 3) The date format is not recognized.")
+
+                        if results['daily_results']:
+                            st.subheader("Daily Breakdown")
+                            st.dataframe(pd.DataFrame(results['daily_results']), use_container_width=True)
+        except Exception as e:
+            st.error(f"Failed to parse CSV: {str(e)}")
+            
     else:
         st.info("Please upload a CSV file. Use the Fyers data fetcher below to download one.")
 
