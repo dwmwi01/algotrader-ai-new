@@ -290,26 +290,33 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 5. BULLETPROOF BACKTESTING ENGINE
+# 5. REALISTIC BACKTESTING ENGINE (UPDATED)
 # ==========================================
 def run_backtest(df, config):
-    diag = {"total_days": 0, "skipped_short_day": 0, "skipped_no_orb": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "traded": 0}
+    diag = {"total_days": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0}
     BROKERAGE_PER_ORDER = 20
+    SLIPPAGE_POINTS = 1.0 # 1 point slippage on entry and exit
     
     df.columns = [str(c).lower() for c in df.columns]
     
     if not isinstance(df.index, pd.DatetimeIndex):
-        try:
-            df.index = pd.to_datetime(df.index)
-        except:
-            return {"error": "Index is not a valid datetime format."}
+        df.index = pd.to_datetime(df.index)
 
-    # --- TIMEZONE FIX ---
-    # If the first hour is before 9 AM, it's likely UTC. Convert to IST (+5:30)
+    # Timezone Fix
     if df.index[0].hour < 9:
         df.index = df.index + pd.Timedelta(hours=5, minutes=30)
             
     df = df.between_time('09:15', '15:30').copy()
+    
+    # --- CALCULATE 200 EMA TREND FILTER ---
+    # Resample to daily close to get the daily EMA
+    daily_close = df['close'].resample('D').last().dropna()
+    daily_ema = daily_close.ewm(span=200, adjust=False).mean()
+    
+    # Map the daily EMA back to the intraday data
+    df['daily_ema'] = df.index.normalize().map(daily_ema)
+    df['daily_ema'] = df['daily_ema'].ffill() # Fill any missing days
+
     daily_groups = df.groupby(df.index.date)
     
     total_pnl = 0.0
@@ -320,29 +327,26 @@ def run_backtest(df, config):
     for date, day_data in daily_groups:
         diag["total_days"] += 1
         
-        if len(day_data) < 200:
-            diag["skipped_short_day"] += 1
-            continue
+        if len(day_data) < 200: continue
             
         orb_data = day_data.between_time('09:30', '09:44')
-        if orb_data.empty:
-            diag["skipped_no_orb"] += 1
-            continue
+        if orb_data.empty: continue
             
         range_high = orb_data['high'].max()
         range_low = orb_data['low'].min()
         width = range_high - range_low
         
-        if width <= 5:
-            daily_results.append({"date": str(date), "pnl": 0, "reason": "Range too tight"})
-            continue
-            
+        if width <= 5: continue
         if width > config["chop_killer_max_range"]:
             diag["skipped_chop"] += 1
-            daily_results.append({"date": str(date), "pnl": 0, "reason": "Chop Killer (wide range)"})
             continue
         
-        qty = max(75, round((config["risk_amount"] / width) / 75) * 75)
+        # --- QUANTITY CAP FIX ---
+        # Calculate qty based on risk, but cap it at 4 lots (300 qty) to prevent insane losses
+        raw_qty = config["risk_amount"] / width
+        calculated_qty = round(raw_qty / 75) * 75
+        qty = max(75, min(300, calculated_qty)) 
+        
         post_orb = day_data.between_time('09:45', '15:30')
         
         position = None
@@ -356,22 +360,26 @@ def run_backtest(df, config):
         
         for idx, row in post_orb.iterrows():
             spot = row['close']
+            ema = row['daily_ema']
+            
             if position is None:
-                if spot > range_high:
+                # --- TREND FILTER LOGIC ---
+                if spot > range_high and spot > ema: # Only take CE if above 200 EMA
                     position = "CE"
                     entry_spot = spot
-                    entry_premium = 150.0
+                    entry_premium = 150.0 + SLIPPAGE_POINTS # Add slippage
                     stop_loss = range_low
                     highest_lowest = spot
                     has_scaled_out = False
-                elif spot < range_low:
+                elif spot < range_low and spot < ema: # Only take PE if below 200 EMA
                     position = "PE"
                     entry_spot = spot
-                    entry_premium = 150.0
+                    entry_premium = 150.0 + SLIPPAGE_POINTS
                     stop_loss = range_high
                     highest_lowest = spot
                     has_scaled_out = False
-                else:
+                elif (spot > range_high and spot < ema) or (spot < range_low and spot > ema):
+                    diag["skipped_trend_filter"] += 1
                     continue
             
             if position == "CE":
@@ -379,8 +387,18 @@ def run_backtest(df, config):
             else:
                 highest_lowest = min(highest_lowest, spot)
             
-            if (position == "CE" and spot < stop_loss) or (position == "PE" and spot > stop_loss):
-                exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+            # --- INTRA-CANDLE STOP LOSS ---
+            intraday_sl_hit = False
+            if position == "CE" and row['low'] < stop_loss:
+                spot = stop_loss
+                intraday_sl_hit = True
+            elif position == "PE" and row['high'] > stop_loss:
+                spot = stop_loss
+                intraday_sl_hit = True
+
+            if intraday_sl_hit:
+                calc_exit = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS) # Floor and subtract slippage
                 trade_pnl = (exit_premium - entry_premium) * remaining_qty
                 trade_pnl -= BROKERAGE_PER_ORDER * 2
                 break
@@ -390,7 +408,8 @@ def run_backtest(df, config):
                 if (position == "CE" and spot >= scale_target) or (position == "PE" and spot <= scale_target):
                     half_qty = (remaining_qty // 2 // 75) * 75
                     if half_qty > 0:
-                        exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                        calc_exit = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                        exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS)
                         trade_pnl += (exit_premium - entry_premium) * half_qty - BROKERAGE_PER_ORDER
                         remaining_qty -= half_qty
                     has_scaled_out = True
@@ -400,21 +419,22 @@ def run_backtest(df, config):
                 trail_dist = config["trailing_stop_multiple"] * width
                 trail_sl = highest_lowest - trail_dist if position == "CE" else highest_lowest + trail_dist
                 if (position == "CE" and spot <= trail_sl) or (position == "PE" and spot >= trail_sl):
-                    exit_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                    calc_exit = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+                    exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS)
                     trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
                     break
         
         if position is not None and remaining_qty > 0:
             last_spot = post_orb.iloc[-1]['close']
-            exit_premium = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
+            calc_exit = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
+            exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS)
             trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
         
         if position is not None:
             diag["traded"] += 1
             trades_taken += 1
             total_pnl += trade_pnl
-            if trade_pnl > 0:
-                win_days += 1
+            if trade_pnl > 0: win_days += 1
             daily_results.append({"date": str(date), "pnl": round(trade_pnl, 2), "reason": "Trade executed"})
         else:
             diag["skipped_no_breakout"] += 1
