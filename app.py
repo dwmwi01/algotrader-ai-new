@@ -290,10 +290,10 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 5. REALISTIC BACKTESTING ENGINE (WITH MIN RANGE FILTER)
+# 5. REALISTIC BACKTESTING ENGINE (FINAL FIX)
 # ==========================================
 def run_backtest(df, config):
-    diag = {"total_days": 0, "skipped_wide_range": 0, "skipped_tight_range": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0, "huge_loss_prevented": 0}
+    diag = {"total_days": 0, "skipped_wide_range": 0, "skipped_tight_range": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0}
     BROKERAGE_PER_ORDER = 20
     SLIPPAGE_POINTS = 1.0 
     
@@ -334,17 +334,17 @@ def run_backtest(df, config):
         width = range_high - range_low
         
         # --- RANGE FILTERS ---
-        if width < 20: # MINIMUM RANGE FILTER (Prevents over-leveraging)
+        if width < 20: 
             diag["skipped_tight_range"] += 1
             continue
         if width > config["chop_killer_max_range"]:
             diag["skipped_wide_range"] += 1
             continue
         
-        # Quantity Calculation & Lower Cap (Max 2 lots instead of 4)
+        # Quantity Calculation & Lower Cap (Max 2 lots)
         raw_qty = config["risk_amount"] / width
         calculated_qty = round(raw_qty / 75) * 75
-        qty = max(75, min(150, calculated_qty)) # CAPPED AT 2 LOTS (150)
+        qty = max(75, min(150, calculated_qty)) 
         
         post_orb = day_data.between_time('09:45', '15:30')
         
@@ -352,7 +352,6 @@ def run_backtest(df, config):
         entry_spot = 0.0
         entry_premium = 0.0
         stop_loss = 0.0
-        premium_stop_loss = 0.0
         highest_lowest = 0.0
         remaining_qty = qty
         has_scaled_out = False
@@ -368,7 +367,6 @@ def run_backtest(df, config):
                     entry_spot = spot
                     entry_premium = 150.0 + SLIPPAGE_POINTS 
                     stop_loss = range_low
-                    premium_stop_loss = entry_premium * 0.80
                     highest_lowest = spot
                     has_scaled_out = False
                 elif spot < range_low and spot < ema: 
@@ -376,34 +374,24 @@ def run_backtest(df, config):
                     entry_spot = spot
                     entry_premium = 150.0 + SLIPPAGE_POINTS
                     stop_loss = range_high
-                    premium_stop_loss = entry_premium * 0.80
                     highest_lowest = spot
                     has_scaled_out = False
                 elif (spot > range_high and spot < ema) or (spot < range_low and spot > ema):
                     diag["skipped_trend_filter"] += 1
                     continue
-            
-            calc_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
-            current_premium = max(1.0, calc_premium - SLIPPAGE_POINTS)
-
-            # --- CHECK PREMIUM STOP LOSS ---
-            if current_premium <= premium_stop_loss:
-                trade_pnl += (current_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
-                diag["huge_loss_prevented"] += 1
-                break
 
             if position == "CE":
                 highest_lowest = max(highest_lowest, spot)
             else:
                 highest_lowest = min(highest_lowest, spot)
             
-            # --- INTRA-CANDLE SPOT STOP LOSS ---
+            # --- INTRA-CANDLE SPOT STOP LOSS (FINAL FIX) ---
             intraday_sl_hit = False
             if position == "CE" and row['low'] < stop_loss:
-                spot = stop_loss
+                spot = stop_loss 
                 intraday_sl_hit = True
             elif position == "PE" and row['high'] > stop_loss:
-                spot = stop_loss
+                spot = stop_loss 
                 intraday_sl_hit = True
 
             if intraday_sl_hit:
@@ -424,8 +412,7 @@ def run_backtest(df, config):
                         trade_pnl += (exit_premium - entry_premium) * half_qty - BROKERAGE_PER_ORDER
                         remaining_qty -= half_qty
                     has_scaled_out = True
-                    stop_loss = entry_spot
-                    premium_stop_loss = entry_premium
+                    stop_loss = entry_spot 
             
             # --- TRAILING STOP ---
             elif has_scaled_out:
@@ -437,6 +424,7 @@ def run_backtest(df, config):
                     trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
                     break
         
+        # Time exit (15:30)
         if position is not None and remaining_qty > 0:
             last_spot = post_orb.iloc[-1]['close']
             calc_exit = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
