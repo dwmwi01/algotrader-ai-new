@@ -290,10 +290,10 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 5. REALISTIC BACKTESTING ENGINE (FINAL FIX)
+# 5. REALISTIC BACKTESTING ENGINE (FINAL FIX WITH SLIPPAGE LIMIT)
 # ==========================================
 def run_backtest(df, config):
-    diag = {"total_days": 0, "skipped_wide_range": 0, "skipped_tight_range": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0}
+    diag = {"total_days": 0, "skipped_wide_range": 0, "skipped_tight_range": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "skipped_slippage": 0, "traded": 0}
     BROKERAGE_PER_ORDER = 20
     SLIPPAGE_POINTS = 1.0 
     
@@ -362,7 +362,11 @@ def run_backtest(df, config):
             ema = row['daily_ema']
             
             if position is None:
+                # Check Trend Filter AND Slippage Filter
                 if spot > range_high and spot > ema: 
+                    if spot > range_high + 10: # SLIPPAGE LIMIT: Skip if already ran 10+ points past high
+                        diag["skipped_slippage"] += 1
+                        continue
                     position = "CE"
                     entry_spot = spot
                     entry_premium = 150.0 + SLIPPAGE_POINTS 
@@ -370,6 +374,9 @@ def run_backtest(df, config):
                     highest_lowest = spot
                     has_scaled_out = False
                 elif spot < range_low and spot < ema: 
+                    if spot < range_low - 10: # SLIPPAGE LIMIT: Skip if already ran 10+ points past low
+                        diag["skipped_slippage"] += 1
+                        continue
                     position = "PE"
                     entry_spot = spot
                     entry_premium = 150.0 + SLIPPAGE_POINTS
@@ -385,7 +392,7 @@ def run_backtest(df, config):
             else:
                 highest_lowest = min(highest_lowest, spot)
             
-            # --- INTRA-CANDLE SPOT STOP LOSS (FINAL FIX) ---
+            # --- INTRA-CANDLE SPOT STOP LOSS ---
             intraday_sl_hit = False
             if position == "CE" and row['low'] < stop_loss:
                 spot = stop_loss 
