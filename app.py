@@ -290,12 +290,12 @@ def fetch_fyers_history(client_id, access_token, symbol, start_date, end_date, r
     return df
 
 # ==========================================
-# 5. REALISTIC BACKTESTING ENGINE (UPDATED)
+# 5. REALISTIC BACKTESTING ENGINE (WITH PREMIUM STOP LOSS)
 # ==========================================
 def run_backtest(df, config):
-    diag = {"total_days": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0}
+    diag = {"total_days": 0, "skipped_chop": 0, "skipped_no_breakout": 0, "skipped_trend_filter": 0, "traded": 0, "huge_loss_prevented": 0}
     BROKERAGE_PER_ORDER = 20
-    SLIPPAGE_POINTS = 1.0 # 1 point slippage on entry and exit
+    SLIPPAGE_POINTS = 1.0 
     
     df.columns = [str(c).lower() for c in df.columns]
     
@@ -308,14 +308,11 @@ def run_backtest(df, config):
             
     df = df.between_time('09:15', '15:30').copy()
     
-    # --- CALCULATE 200 EMA TREND FILTER ---
-    # Resample to daily close to get the daily EMA
+    # 200 EMA Trend Filter
     daily_close = df['close'].resample('D').last().dropna()
     daily_ema = daily_close.ewm(span=200, adjust=False).mean()
-    
-    # Map the daily EMA back to the intraday data
     df['daily_ema'] = df.index.normalize().map(daily_ema)
-    df['daily_ema'] = df['daily_ema'].ffill() # Fill any missing days
+    df['daily_ema'] = df['daily_ema'].ffill()
 
     daily_groups = df.groupby(df.index.date)
     
@@ -341,8 +338,7 @@ def run_backtest(df, config):
             diag["skipped_chop"] += 1
             continue
         
-        # --- QUANTITY CAP FIX ---
-        # Calculate qty based on risk, but cap it at 4 lots (300 qty) to prevent insane losses
+        # Quantity Calculation & Cap (Max 4 lots)
         raw_qty = config["risk_amount"] / width
         calculated_qty = round(raw_qty / 75) * 75
         qty = max(75, min(300, calculated_qty)) 
@@ -353,6 +349,7 @@ def run_backtest(df, config):
         entry_spot = 0.0
         entry_premium = 0.0
         stop_loss = 0.0
+        premium_stop_loss = 0.0 # NEW
         highest_lowest = 0.0
         remaining_qty = qty
         has_scaled_out = False
@@ -363,31 +360,42 @@ def run_backtest(df, config):
             ema = row['daily_ema']
             
             if position is None:
-                # --- TREND FILTER LOGIC ---
-                if spot > range_high and spot > ema: # Only take CE if above 200 EMA
+                if spot > range_high and spot > ema: 
                     position = "CE"
                     entry_spot = spot
-                    entry_premium = 150.0 + SLIPPAGE_POINTS # Add slippage
+                    entry_premium = 150.0 + SLIPPAGE_POINTS 
                     stop_loss = range_low
+                    premium_stop_loss = entry_premium * 0.80 # 20% SL on premium
                     highest_lowest = spot
                     has_scaled_out = False
-                elif spot < range_low and spot < ema: # Only take PE if below 200 EMA
+                elif spot < range_low and spot < ema: 
                     position = "PE"
                     entry_spot = spot
                     entry_premium = 150.0 + SLIPPAGE_POINTS
                     stop_loss = range_high
+                    premium_stop_loss = entry_premium * 0.80 # 20% SL on premium
                     highest_lowest = spot
                     has_scaled_out = False
                 elif (spot > range_high and spot < ema) or (spot < range_low and spot > ema):
                     diag["skipped_trend_filter"] += 1
                     continue
             
+            # Calculate current premium (Proxy)
+            calc_premium = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
+            current_premium = max(1.0, calc_premium - SLIPPAGE_POINTS)
+
+            # --- CHECK PREMIUM STOP LOSS ---
+            if current_premium <= premium_stop_loss:
+                trade_pnl += (current_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
+                diag["huge_loss_prevented"] += 1
+                break # Exit immediately
+
             if position == "CE":
                 highest_lowest = max(highest_lowest, spot)
             else:
                 highest_lowest = min(highest_lowest, spot)
             
-            # --- INTRA-CANDLE STOP LOSS ---
+            # --- INTRA-CANDLE SPOT STOP LOSS ---
             intraday_sl_hit = False
             if position == "CE" and row['low'] < stop_loss:
                 spot = stop_loss
@@ -398,11 +406,12 @@ def run_backtest(df, config):
 
             if intraday_sl_hit:
                 calc_exit = entry_premium + ((spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - spot) * 0.5)
-                exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS) # Floor and subtract slippage
+                exit_premium = max(1.0, calc_exit - SLIPPAGE_POINTS)
                 trade_pnl = (exit_premium - entry_premium) * remaining_qty
                 trade_pnl -= BROKERAGE_PER_ORDER * 2
                 break
             
+            # --- SCALE OUT ---
             if not has_scaled_out:
                 scale_target = entry_spot + (config["scale_out_multiple"] * width) if position == "CE" else entry_spot - (config["scale_out_multiple"] * width)
                 if (position == "CE" and spot >= scale_target) or (position == "PE" and spot <= scale_target):
@@ -414,7 +423,9 @@ def run_backtest(df, config):
                         remaining_qty -= half_qty
                     has_scaled_out = True
                     stop_loss = entry_spot
+                    premium_stop_loss = entry_premium # Move Premium SL to breakeven
             
+            # --- TRAILING STOP ---
             elif has_scaled_out:
                 trail_dist = config["trailing_stop_multiple"] * width
                 trail_sl = highest_lowest - trail_dist if position == "CE" else highest_lowest + trail_dist
@@ -424,6 +435,7 @@ def run_backtest(df, config):
                     trade_pnl += (exit_premium - entry_premium) * remaining_qty - BROKERAGE_PER_ORDER
                     break
         
+        # Time exit (15:30)
         if position is not None and remaining_qty > 0:
             last_spot = post_orb.iloc[-1]['close']
             calc_exit = entry_premium + ((last_spot - entry_spot) * 0.5 if position == "CE" else (entry_spot - last_spot) * 0.5)
@@ -454,7 +466,7 @@ def run_backtest(df, config):
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "Live Execution"
 if 'config' not in st.session_state:
-    st.session_state.config = {"risk_amount": 2000, "chop_killer_max_range": 120, "scale_out_multiple": 1.5, "trailing_stop_multiple": 0.5}
+    st.session_state.config = {"risk_amount": 2000, "chop_killer_max_range": 100, "scale_out_multiple": 2.0, "trailing_stop_multiple": 0.8}
 if 'broker' not in st.session_state:
     st.session_state.broker = None
 if 'fyers_connected' not in st.session_state:
@@ -802,10 +814,10 @@ elif st.session_state.active_tab == "Backtester":
                         col_r2.metric("Trades Taken", results['trades_taken'])
                         col_r3.metric("Win Rate", f"{results['win_rate']:.2f}%")
                         
-                        with st.expander("Diagnostic Details (Why 0 trades?)"):
+                        with st.expander("Diagnostic Details"):
                             st.json(results["diag"])
                             if results['trades_taken'] == 0:
-                                st.warning("Check the diagnostic details above. Common reasons for 0 trades: 1) The 'Chop Killer' range is too wide (default 120). 2) The CSV doesn't contain intraday time data (e.g., it's daily data). 3) The date format is not recognized.")
+                                st.warning("Check the diagnostic details above. Common reasons for 0 trades: 1) The 'Chop Killer' range is too wide. 2) The CSV doesn't contain intraday time data. 3) The date format is not recognized.")
 
                         if results['daily_results']:
                             st.subheader("Daily Breakdown")
